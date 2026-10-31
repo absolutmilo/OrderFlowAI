@@ -1,0 +1,30 @@
+# Python environments and bytecode
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local market data and SQLite sidecar files
+data/*.sqlite3
+data/*.sqlite3-*
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

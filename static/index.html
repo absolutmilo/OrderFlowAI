@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OrderFlowAI - Panel de Microestructura & Sonificación</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+</head>
+<body>
+
+  <!-- Top Header -->
+  <header>
+    <div class="brand">
+      <span class="logo-badge">OF-AI</span>
+      <span class="brand-title">OrderFlowAI Terminal</span>
+    </div>
+
+    <div class="market-ticker">
+      <div class="ticker-item">
+        <span class="ticker-label">BTC/USDT Multi-Tape</span>
+        <span class="ticker-value" id="btc-price">$---,--</span>
+      </div>
+      <div class="ticker-item">
+        <span class="ticker-label">CVD (Delta Acumulado)</span>
+        <span class="ticker-value" id="cvd-usd">$0.0k</span>
+      </div>
+      <div class="ticker-item">
+        <span class="ticker-label">Velocidad Cinta</span>
+        <span class="ticker-value" id="trades-per-sec">0 /s</span>
+      </div>
+      <div class="status-pill" id="connection-status">
+        <span class="status-dot"></span> <span id="status-text">CONECTANDO...</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Audio Controls Bar -->
+  <div class="audio-bar">
+    <div class="audio-controls">
+      <button class="btn-audio" id="btn-toggle-audio">
+        🔊 Activar Sonificación en Tiempo Real
+      </button>
+
+      <button class="btn-audio" id="btn-test-audio" style="border-color:#384961;">
+        🔔 Probar Audio
+      </button>
+
+      <div class="slider-group">
+        <label for="slider-volume">Volumen:</label>
+        <input type="range" id="slider-volume" min="0" max="1" step="0.05" value="0.6">
+      </div>
+
+      <div class="slider-group">
+        <label for="select-threshold">Filtro Audio (USD):</label>
+        <select id="select-threshold" style="background:#161e29; color:#e6edf3; border:1px solid #233042; padding:4px 8px; border-radius:4px;">
+          <option value="1000">Todos (≥ $1,000)</option>
+          <option value="5000" selected>Frecuentes (≥ $5,000)</option>
+          <option value="25000">Significativos (≥ $25k)</option>
+          <option value="100000">Whale Orders (≥ $100k)</option>
+          <option value="250000">Institucional Puro (≥ $250k)</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="font-size:0.78rem; color:var(--text-muted);">
+      Audio Espacial: <span style="color:var(--green-buy); font-weight:700;">🟢 Compras (Canal Derecho)</span> | <span style="color:var(--red-sell); font-weight:700;">🔴 Ventas (Canal Izquierdo)</span>
+    </div>
+  </div>
+
+  <!-- Main Content Grid -->
+  <main>
+    <!-- Left Column: Microstructure Probabilities -->
+    <section class="card">
+      <div class="card-title">
+        <span>Clasificación de Flujo de Órdenes</span>
+        <div class="classification-tools">
+          <span class="mode-badge" id="inference-mode">MODO: HEURÍSTICO</span>
+          <span style="font-size:0.75rem; color:#00e5ff;" id="classification-badge">CALENTANDO VENTANA</span>
+          <button class="info-button" id="btn-detector-info" type="button" aria-label="Información e interpretación de detectores" aria-haspopup="dialog">i</button>
+        </div>
+      </div>
+
+      <div class="probability-group">
+        <!-- 1. Algorithmic Execution -->
+        <div class="prob-row algo-style">
+          <div class="prob-header">
+            <div>
+              <div class="prob-name">Ejecución Algorítmica Institucional</div>
+              <div class="prob-desc">Eventos regulares, equidistantes y uniformes (TWAP/VWAP)</div>
+            </div>
+            <div class="prob-percent" id="prob-algo">--%</div>
+          </div>
+          <div class="progress-track">
+            <div class="progress-bar" id="bar-algo" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <!-- 2. Iceberg -->
+        <div class="prob-row iceberg-style">
+          <div class="prob-header">
+            <div>
+              <div class="prob-name">Iceberg Detectado</div>
+              <div class="prob-desc" id="desc-iceberg">Volumen masivo concentrado en un único nivel de precio</div>
+            </div>
+            <div class="prob-percent" id="prob-iceberg">--%</div>
+          </div>
+          <div class="progress-track">
+            <div class="progress-bar" id="bar-iceberg" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <!-- 3. Absorption -->
+        <div class="prob-row absorption-style">
+          <div class="prob-header">
+            <div>
+              <div class="prob-name">Market Maker Absorbiendo</div>
+              <div class="prob-desc" id="desc-absorption">Compras/ventas agresivas sin desplazamiento del precio</div>
+            </div>
+            <div class="prob-percent" id="prob-absorption">--%</div>
+          </div>
+          <div class="progress-track">
+            <div class="progress-bar" id="bar-absorption" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <!-- 4. Retail -->
+        <div class="prob-row retail-style">
+          <div class="prob-header">
+            <div>
+              <div class="prob-name">Trading Minorista Dominante</div>
+              <div class="prob-desc">Órdenes pequeñas fragmentadas con alta dispersión temporal</div>
+            </div>
+            <div class="prob-percent" id="prob-retail">--%</div>
+          </div>
+          <div class="progress-track">
+            <div class="progress-bar" id="bar-retail" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <!-- 5. HFT Competition -->
+        <div class="prob-row hft-style">
+          <div class="prob-header">
+            <div>
+              <div class="prob-name">Alta Competencia HFT</div>
+              <div class="prob-desc">Ráfagas violentas de microsegundos en ambos lados</div>
+            </div>
+            <div class="prob-percent" id="prob-hft">--%</div>
+          </div>
+          <div class="progress-track">
+            <div class="progress-bar" id="bar-hft" style="width: 0%;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Notes -->
+      <div class="pattern-notes" id="pattern-notes">
+        <div class="pattern-note-item"><span class="note-bullet">▶</span> Conectando feeds agregados de Binance + Bybit...</div>
+      </div>
+    </section>
+
+    <!-- Right Column: Live Aggregated Tape -->
+    <section class="card">
+      <div class="card-title">
+        <span>Cinta de Transacciones Significativas</span>
+        <span style="font-size:0.75rem; color:var(--text-muted);" id="feed-stats">BINANCE + BYBIT</span>
+      </div>
+
+      <div class="tape-container">
+        <div class="tape-header">
+          <span>Hora</span>
+          <span>Exchange</span>
+          <span>Precio</span>
+          <span>Tamaño</span>
+          <span>Valor USD</span>
+          <span>Patrón</span>
+        </div>
+        <div class="tape-list" id="tape-list">
+          <!-- Dynamic Trades -->
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <dialog class="info-dialog" id="detector-info-dialog" aria-labelledby="info-dialog-title">
+    <div class="info-dialog-header">
+      <h2 id="info-dialog-title">Cómo interpretar los detectores</h2>
+      <button class="info-close" id="btn-close-info" type="button" aria-label="Cerrar información">×</button>
+    </div>
+    <div class="info-dialog-content">
+      <p class="info-warning"><strong>Modo actual: heurístico.</strong> Los porcentajes son puntuaciones de reglas, no probabilidades estadísticas calibradas ni señales de trading. Los detectores infieren patrones; no identifican con certeza quién ejecutó una orden.</p>
+      <p>Los trades llegan de Binance Spot y Bybit Linear, se agrupan por lado, precio y ventana temporal de 50 ms, y se analizan en una ventana móvil de hasta 200 grupos. El sistema espera 25 grupos para salir del calentamiento. La ventana vive en memoria y se reinicia al reiniciar el servidor.</p>
+      <h3>Detectores y lectura de sus señales</h3>
+      <ul>
+        <li><strong>Ejecución algorítmica:</strong> compara regularidad de tiempo entre trades (60 %) y uniformidad del tamaño en USD (40 %). El punto medio del score se configura en CV <span id="algo-time-threshold">0.45</span> para intervalos y CV <span id="algo-size-threshold">0.50</span> para tamaños. Una puntuación alta significa cadencia/tamaño regulares; no confirma TWAP, VWAP ni actividad institucional.</li>
+        <li><strong>Iceberg:</strong> busca concentración superior al <span id="iceberg-ratio">22 %</span> del volumen en un precio redondeado a 0.1, con al menos <span id="iceberg-count">6</span> grupos y <span id="iceberg-usd">$150,000</span> en ese nivel. Predominio de ventas agresivas sugiere comprador pasivo; predominio de compras sugiere vendedor pasivo. Sin datos del libro de órdenes, no puede confirmar liquidez oculta.</li>
+        <li><strong>Absorción:</strong> busca al menos <span id="absorption-usd">$200,000</span> de volumen, desequilibrio comprador/vendedor superior al <span id="absorption-ratio">35 %</span> y desplazamiento inferior a <span id="absorption-bps">1.5</span> puntos básicos entre extremos de la ventana. Sugiere presión agresiva sin avance del precio; no prueba que exista un market maker absorbiendo.</li>
+        <li><strong>Competencia HFT:</strong> combina más de <span id="hft-tps">60</span> grupos por segundo con alternancia de compra/venta. Mide actividad rápida en la cinta, no identifica operadores ni latencia HFT.</li>
+        <li><strong>Breakout:</strong> aumenta si el desplazamiento supera <span id="breakout-bps">6</span> puntos básicos y el desequilibrio de volumen supera el <span id="breakout-ratio">40 %</span>. Es una condición de movimiento, no una confirmación de ruptura sostenible.</li>
+        <li><strong>Dominancia retail:</strong> es una puntuación inversa a la mayor señal de algoritmo, iceberg, absorción o HFT. No clasifica directamente el tamaño ni la identidad de cada participante.</li>
+      </ul>
+      <h3>Interpretación práctica</h3>
+      <p>Lee cada porcentaje como intensidad relativa de una regla dentro de la ventana actual. Contrasta varias señales con precio, volumen y contexto; no compares los porcentajes como si debieran sumar 100 %. Datos escasos o trades agregados de varios exchanges pueden cambiar la lectura.</p>
+      <h3>Preparación para entrenamiento</h3>
+      <p>SQLite local guarda, cada segundo después del calentamiento, features, puntuaciones heurísticas y la versión de configuración. A los 5, 30 y 60 segundos registra retorno en puntos básicos y etiqueta reversión, continuación o neutral respecto al desequilibrio inicial (movimiento mínimo: 1 bp). Esto crea datos para evaluar y ajustar detectores; todavía no hay modelo entrenado ni predicciones aprendidas. La captura se conserva sin borrado automático.</p>
+      <p id="data-capture-status" class="data-capture-status">Estado de captura: esperando conexión.</p>
+    </div>
+  </dialog>
+
+  <script src="/static/js/audio.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

@@ -13,7 +13,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Set, List
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,7 +53,10 @@ trade_counter = 0
 exchange_counts = {"Binance": 0, "Bybit": 0}
 last_capture_at_ms = 0
 data_capture_status = "starting"
-INFERENCE_MODE = "heuristic"
+
+
+def get_inference_mode() -> str:
+    return classifier.inference_mode
 
 
 async def broadcast_message(message: dict):
@@ -125,7 +128,7 @@ async def handle_aggregated_trade(agg_trade: AggregatedTrade):
         "probabilities": probabilities.to_dict(),
         "metrics": metrics.to_dict() if metrics else None,
         "exchange_stats": exchange_counts,
-        "inference_mode": INFERENCE_MODE,
+        "inference_mode": classifier.inference_mode,
         "data_capture_status": data_capture_status,
         "detector_config": asdict(CONFIG.classifier),
     }
@@ -201,20 +204,71 @@ async def websocket_endpoint(websocket: WebSocket):
             "probabilities": probs.to_dict(),
             "metrics": metrics.to_dict() if metrics else None,
             "exchange_stats": exchange_counts,
-            "inference_mode": INFERENCE_MODE,
+            "inference_mode": classifier.inference_mode,
             "data_capture_status": data_capture_status,
             "detector_config": asdict(CONFIG.classifier),
         }))
 
         while True:
-            # Keep socket alive and receive client commands
-            await websocket.receive_text()
+            raw_msg = await websocket.receive_text()
+            try:
+                msg_data = json.loads(raw_msg)
+                action = msg_data.get("action")
+                if action == "toggle_inference_mode":
+                    new_mode = classifier.toggle_inference_mode()
+                    logger.info(f"Toggle inference mode vía WS: {new_mode}")
+                    await broadcast_message({
+                        "type": "mode_change",
+                        "inference_mode": new_mode,
+                    })
+                elif action == "set_inference_mode":
+                    new_mode = classifier.set_inference_mode(msg_data.get("mode", "model"))
+                    logger.info(f"Set inference mode vía WS: {new_mode}")
+                    await broadcast_message({
+                        "type": "mode_change",
+                        "inference_mode": new_mode,
+                    })
+            except (json.JSONDecodeError, AttributeError, ValueError, RuntimeError) as error:
+                logger.warning("Acción WebSocket inválida: %s", error)
+                await websocket.send_text(json.dumps({
+                    "type": "mode_error",
+                    "message": str(error),
+                }))
     except WebSocketDisconnect:
         active_websockets.discard(websocket)
         logger.info(f"Cliente desconectado. Total clientes: {len(active_websockets)}")
     except Exception as e:
         active_websockets.discard(websocket)
         logger.warning(f"Error WebSocket: {e}")
+
+
+@app.post("/api/inference-mode/toggle")
+async def toggle_inference_mode_endpoint():
+    try:
+        new_mode = classifier.toggle_inference_mode()
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    await broadcast_message({
+        "type": "mode_change",
+        "inference_mode": new_mode,
+    })
+    return JSONResponse({"status": "ok", "inference_mode": new_mode})
+
+
+@app.post("/api/inference-mode")
+async def set_inference_mode_endpoint(payload: dict):
+    target = payload.get("mode", "model")
+    try:
+        new_mode = classifier.set_inference_mode(target)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    await broadcast_message({
+        "type": "mode_change",
+        "inference_mode": new_mode,
+    })
+    return JSONResponse({"status": "ok", "inference_mode": new_mode})
 
 
 @app.get("/api/status")
@@ -226,7 +280,7 @@ async def get_status():
         "exchange_counts": exchange_counts,
         "is_warmed_up": classifier.is_warmed_up(),
         "window_trades": len(classifier.trades),
-        "inference_mode": INFERENCE_MODE,
+        "inference_mode": classifier.inference_mode,
         "detector_config": asdict(CONFIG.classifier),
         "data_capture_status": data_capture_status,
         "stored_observations": market_data_store.observation_count() if market_data_store.connection is not None else None,

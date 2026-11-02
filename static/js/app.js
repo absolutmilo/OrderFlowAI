@@ -15,6 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const elFeedStats = document.getElementById('feed-stats');
   const elClassificationBadge = document.getElementById('classification-badge');
   const elInferenceMode = document.getElementById('inference-mode');
+  const elInferenceModeStatus = document.getElementById('inference-mode-status');
   const infoDialog = document.getElementById('detector-info-dialog');
   const btnDetectorInfo = document.getElementById('btn-detector-info');
   const btnCloseInfo = document.getElementById('btn-close-info');
@@ -47,6 +48,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const MAX_TAPE_ROWS = 120;
   let socket = null;
   let reconnectTimer = null;
+  let modeStatusTimer = null;
 
   btnDetectorInfo.addEventListener('click', () => infoDialog.showModal());
   btnCloseInfo.addEventListener('click', () => infoDialog.close());
@@ -82,6 +84,48 @@ document.addEventListener('DOMContentLoaded', () => {
     window.audioEngine.setThreshold(parseFloat(e.target.value));
   });
 
+  // Toggle inference mode (Heuristic vs HMM Model)
+  if (elInferenceMode) {
+    elInferenceMode.addEventListener('click', async () => {
+      if (elInferenceMode.disabled) return;
+
+      elInferenceMode.disabled = true;
+      elInferenceMode.setAttribute('aria-busy', 'true');
+      setInferenceModeStatus('Cambiando modo...');
+
+      try {
+        const response = await fetch('/api/inference-mode/toggle', { method: 'POST' });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || `Error HTTP ${response.status}`);
+        }
+        if (!data.inference_mode) {
+          throw new Error('El servidor no devolvió el modo de inferencia.');
+        }
+        updateSystemMode(data.inference_mode);
+        setInferenceModeStatus('Modo actualizado.');
+      } catch (error) {
+        console.error('Error alternando modo de inferencia:', error);
+        setInferenceModeStatus(`No se pudo cambiar: ${error.message}`, true);
+      } finally {
+        elInferenceMode.disabled = false;
+        elInferenceMode.removeAttribute('aria-busy');
+      }
+    });
+  }
+
+  function setInferenceModeStatus(message, isError = false) {
+    if (!elInferenceModeStatus) return;
+    if (modeStatusTimer) clearTimeout(modeStatusTimer);
+    elInferenceModeStatus.textContent = message;
+    elInferenceModeStatus.classList.toggle('error', isError);
+    if (message && !isError) {
+      modeStatusTimer = setTimeout(() => {
+        elInferenceModeStatus.textContent = '';
+      }, 2500);
+    }
+  }
+
   function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws/stream`;
@@ -111,6 +155,10 @@ document.addEventListener('DOMContentLoaded', () => {
           if (data.metrics) updateMetrics(data.metrics);
           if (data.exchange_stats) updateExchangeStats(data.exchange_stats);
           updateSystemMode(data.inference_mode, data.data_capture_status, data.detector_config);
+        } else if (data.type === 'mode_change') {
+          updateSystemMode(data.inference_mode);
+        } else if (data.type === 'mode_error') {
+          setInferenceModeStatus(data.message || 'No se pudo cambiar el modo.', true);
         }
       } catch (err) {
         console.error('Error procesando mensaje WS:', err);
@@ -136,9 +184,17 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function updateSystemMode(mode, captureStatus, detectorConfig) {
-    if (elInferenceMode) {
-      const modeNames = { heuristic: 'HEURÍSTICO', model: 'MODELO' };
-      elInferenceMode.textContent = `MODO: ${modeNames[mode] || 'HEURÍSTICO'}`;
+    if (elInferenceMode && mode) {
+      const isModel = mode === 'model';
+      elInferenceMode.textContent = isModel ? '⚡ MODO: MODELO (HMM-4)' : '⚙️ MODO: HEURÍSTICO';
+      elInferenceMode.title = `Click para alternar a modo ${isModel ? 'Heurístico' : 'Modelo HMM'}`;
+      if (isModel) {
+        elInferenceMode.classList.add('mode-model');
+        elInferenceMode.classList.remove('mode-heuristic');
+      } else {
+        elInferenceMode.classList.add('mode-heuristic');
+        elInferenceMode.classList.remove('mode-model');
+      }
     }
     if (elDataCaptureStatus && captureStatus) {
       const statusText = {

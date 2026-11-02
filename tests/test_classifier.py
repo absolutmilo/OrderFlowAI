@@ -11,7 +11,7 @@ from src.core.aggregator import TradeAggregator
 
 def test_algo_institutional_detection():
     """Verify that regular, equidistant, uniform orders produce a high algorithmic probability."""
-    classifier = MicrostructureClassifier(window_size=100, warmup_trades=30)
+    classifier = MicrostructureClassifier(window_size=100, warmup_trades=30, inference_mode="heuristic")
 
     base_time = 1700000000000
     base_price = 70000.0
@@ -37,7 +37,7 @@ def test_algo_institutional_detection():
 
 def test_iceberg_detection():
     """Verify that heavy accumulation at a single price level triggers Iceberg detection."""
-    classifier = MicrostructureClassifier(window_size=100, warmup_trades=30)
+    classifier = MicrostructureClassifier(window_size=100, warmup_trades=30, inference_mode="heuristic")
     base_time = 1700000000000
     iceberg_price = 69500.0
 
@@ -68,7 +68,7 @@ def test_iceberg_detection():
 
 def test_absorption_detection():
     """Verify that aggressive selling with zero price drop triggers passive buyer absorption."""
-    classifier = MicrostructureClassifier(window_size=100, warmup_trades=30)
+    classifier = MicrostructureClassifier(window_size=100, warmup_trades=30, inference_mode="heuristic")
     base_time = 1700000000000
     static_price = 70000.0
 

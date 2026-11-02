@@ -42,7 +42,15 @@ flowchart TD
 
 ## 🧪 Captura local para evaluación y entrenamiento futuro
 
-Por defecto, el sistema opera en **modo heurístico**. No hay un modelo de aprendizaje automático activo. Después del calentamiento, SQLite guarda un snapshot por segundo de las métricas/features, puntuaciones heurísticas y configuración versionada. La base está en `data/orderflow.sqlite3` y no tiene borrado automático.
+El modo inicial se define en `CONFIG.classifier.default_inference_mode` en `config.py` (actualmente `model`). En modo entrenado, el servidor carga `data/hmm_regime_model.json`; si no puede cargar el artefacto, inicia en modo heurístico e indica el modo efectivo en el dashboard. Usa el botón **MODO** del panel para alternar entre el HMM entrenado y las reglas heurísticas; la página confirma el cambio o muestra el error. Al volver al modo HMM, el estado de inferencia se reinicia.
+
+Después del calentamiento, SQLite guarda un snapshot por segundo de las métricas/features, puntuaciones heurísticas y configuración versionada. La base está en `data/orderflow.sqlite3` y no tiene borrado automático. Para reentrenar el HMM con esa base:
+
+```bash
+python -m src.ml.train_hmm
+```
+
+El entrenamiento requiere al menos 100 observaciones guardadas. Al terminar, reinicia el servidor para cargar el artefacto actualizado.
 
 Para cada snapshot, se registran retornos futuros a 5, 30 y 60 segundos en puntos básicos. Se etiquetan como reversión, continuación o neutral respecto a la dirección del CVD inicial; movimientos inferiores a 1 bp son neutrales. Son etiquetas de resultado derivadas del precio, no ground truth de intención del mercado. Esta colección permite estudiar imbalances y reversión y evaluar ajustes antes de entrenar o activar otro modelo.
 

@@ -75,7 +75,8 @@
       <div class="card-title">
         <span>Clasificación de Flujo de Órdenes</span>
         <div class="classification-tools">
-          <span class="mode-badge" id="inference-mode">MODO: HEURÍSTICO</span>
+          <button class="mode-badge clickable mode-model" id="inference-mode" type="button" title="Click para alternar entre Modelo HMM y Heurístico">⚡ MODO: MODELO (HMM-4)</button>
+          <span id="inference-mode-status" class="mode-status" role="status" aria-live="polite"></span>
           <span style="font-size:0.75rem; color:#00e5ff;" id="classification-badge">CALENTANDO VENTANA</span>
           <button class="info-button" id="btn-detector-info" type="button" aria-label="Información e interpretación de detectores" aria-haspopup="dialog">i</button>
         </div>

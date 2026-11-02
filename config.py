@@ -37,6 +37,10 @@ class ClassifierConfig:
     # Minimum trades before emitting high-confidence classifications
     warmup_trades: int = 25
 
+    # Inference mode: "model" (Gaussian HMM) or "heuristic" (Rule-based sigmoid)
+    default_inference_mode: str = "model"
+    hmm_model_path: str = "data/hmm_regime_model.json"
+
     # Algorithmic execution (TWAP/VWAP/Slicing) thresholds:
     algo_inter_arrival_cv_threshold: float = 0.45
     algo_size_cv_threshold: float = 0.50

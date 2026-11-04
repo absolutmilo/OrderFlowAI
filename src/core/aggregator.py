@@ -29,6 +29,8 @@ class TradeAggregator:
             # Criteria: same side, same price, and timestamp difference within aggregation window
             can_merge = (
                 self.current_group is not None
+                and self.current_group.exchange == raw.exchange
+                and self.current_group.symbol == raw.symbol
                 and self.current_group.side == raw.side
                 and abs(self.current_group.price - raw.price) < 0.01
                 and (raw.timestamp_ms - self.current_group.last_timestamp_ms) <= self.window_ms

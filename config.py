@@ -69,8 +69,19 @@ class ClassifierConfig:
 class DataCaptureConfig:
     database_path: str = "data/orderflow.sqlite3"
     sample_interval_seconds: int = 1
-    label_horizons_seconds: Tuple[int, ...] = (5, 30, 60)
+    label_horizons_seconds: Tuple[int, ...] = (5, 30, 60, 300, 600, 900)
     label_min_move_bps: float = 1.0
+
+
+@dataclass
+class ScalpingConfig:
+    symbol: str = "BTCUSDT"
+    exchange: str = "Bybit-Linear"
+    taker_fee_bps_per_side: float = 6.0
+    slippage_bps_per_side: float = 2.0
+    min_training_observations: int = 36000
+    min_validation_trades: int = 10
+    signal_persistence_seconds: int = 3
 
 
 @dataclass
@@ -87,6 +98,7 @@ class AppConfig:
     aggregator: AggregatorConfig = field(default_factory=AggregatorConfig)
     classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
     data_capture: DataCaptureConfig = field(default_factory=DataCaptureConfig)
+    scalping: ScalpingConfig = field(default_factory=ScalpingConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
 
 

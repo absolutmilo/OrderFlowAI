@@ -183,6 +183,52 @@
     </section>
   </main>
 
+  <section class="card scalp-card" aria-labelledby="scalp-title">
+    <div class="card-title scalp-heading">
+      <div>
+        <span id="scalp-title">Setups de scalping BTCUSDT · Bybit Linear</span>
+        <p class="scalp-subtitle">Compara hipótesis de entrada con validación cronológica; solo paper trading</p>
+      </div>
+      <button class="btn-audio" id="btn-scalp-backtest" type="button">Optimizar y validar backtest</button>
+    </div>
+    <div class="scalp-controls">
+      <label for="scalp-strategy">Estrategia</label>
+      <select id="scalp-strategy">
+        <option value="flow_momentum">Flujo + momentum (base)</option>
+        <option value="fourier_breakout">Fourier: anomalía + ruptura</option>
+        <option value="whale_trend">Volumen excepcional + tendencia</option>
+      </select>
+      <label for="scalp-timeframe">Temporalidad</label>
+      <select id="scalp-timeframe">
+        <option value="5">5 minutos</option>
+        <option value="10">10 minutos</option>
+        <option value="15">15 minutos</option>
+      </select>
+      <label for="scalp-direction">Dirección</label>
+      <select id="scalp-direction">
+        <option value="original">Original</option>
+        <option value="inverse">Invertida (LONG ↔ SHORT)</option>
+      </select>
+    </div>
+    <p class="scalp-method-note">Fourier usa dos ciclos cortos, anomalía residual y ruptura; volumen+tendencia usa un spike de volumen, EMA de BTC y desequilibrio de flujo. Son proxies de investigación: no confirman manipulación, identidad whale ni contexto SP500/VIX.</p>
+    <p id="scalp-data-status" class="data-capture-status">Consultando histórico de Bybit Linear...</p>
+    <div class="scalp-results">
+      <div>
+        <h3>Señal actual</h3>
+        <p id="scalp-signal" class="scalp-signal">Esperando configuración validada</p>
+        <p id="scalp-signal-detail" class="scalp-detail">No se envían órdenes reales.</p>
+      </div>
+      <div>
+        <h3>Validación fuera de muestra</h3>
+        <p id="scalp-backtest-result" class="scalp-detail">Ejecuta el backtest cuando haya suficiente historial.</p>
+        <p id="scalp-backtest-metrics" class="scalp-detail"></p>
+        <p id="scalp-backtest-breakdown" class="scalp-detail"></p>
+        <p id="scalp-backtest-exits" class="scalp-detail"></p>
+      </div>
+    </div>
+    <p class="scalp-disclaimer">Paper trading únicamente. Los costos configurados (comisión y slippage) se descuentan antes de evaluar resultados. La validación es cronológica; una muestra corta o resultados pasados no garantizan rendimiento futuro.</p>
+  </section>
+
   <dialog class="info-dialog" id="detector-info-dialog" aria-labelledby="info-dialog-title">
     <div class="info-dialog-header">
       <h2 id="info-dialog-title">Cómo interpretar los detectores</h2>
@@ -203,7 +249,7 @@
       <h3>Interpretación práctica</h3>
       <p>Lee cada porcentaje como intensidad relativa de una regla dentro de la ventana actual. Contrasta varias señales con precio, volumen y contexto; no compares los porcentajes como si debieran sumar 100 %. Datos escasos o trades agregados de varios exchanges pueden cambiar la lectura.</p>
       <h3>Preparación para entrenamiento</h3>
-      <p>SQLite local guarda, cada segundo después del calentamiento, features, puntuaciones heurísticas y la versión de configuración. A los 5, 30 y 60 segundos registra retorno en puntos básicos y etiqueta reversión, continuación o neutral respecto al desequilibrio inicial (movimiento mínimo: 1 bp). Esto crea datos para evaluar y ajustar detectores; todavía no hay modelo entrenado ni predicciones aprendidas. La captura se conserva sin borrado automático.</p>
+      <p>SQLite local guarda snapshots de Bybit Linear cada segundo después del calentamiento; las observaciones históricas que mezclaban exchanges se conservan marcadas como legado y no entran al backtest de scalping. Los horizontes de etiquetado incluyen 5, 30 y 60 segundos y 5, 10 y 15 minutos. El panel de scalping optimiza reglas de secuencia sobre un tramo inicial y valida en un tramo cronológico posterior, con stops/objetivos de ATR y costos configurables. Solo activa avisos si la validación neta fuera de muestra cumple los mínimos; no envía órdenes.</p>
       <p id="data-capture-status" class="data-capture-status">Estado de captura: esperando conexión.</p>
     </div>
   </dialog>

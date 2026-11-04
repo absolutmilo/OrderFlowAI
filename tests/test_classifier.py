@@ -117,3 +117,25 @@ async def test_aggregator_grouping():
     assert len(emitted) == 1
     assert emitted[0].trade_count == 3
     assert abs(emitted[0].total_size - 0.6) < 1e-5
+
+
+@pytest.mark.asyncio
+async def test_aggregator_does_not_merge_trades_from_different_exchanges():
+    emitted = []
+    aggregator = TradeAggregator(on_aggregated_trade=emitted.append)
+    binance_trade = RawTrade(
+        "Binance-Spot", "BTCUSDT", "1", 70000.0, 0.1, 7000.0, TradeSide.BUY, 1000
+    )
+    bybit_trade = RawTrade(
+        "Bybit-Linear", "BTCUSDT", "2", 70000.0, 0.2, 14000.0, TradeSide.BUY, 1010
+    )
+
+    await aggregator.process_raw_trade(binance_trade)
+    await aggregator.process_raw_trade(bybit_trade)
+
+    assert len(emitted) == 1
+    assert emitted[0].exchange == "Binance-Spot"
+    assert emitted[0].total_size == 0.1
+    await aggregator._emit_current_group()
+    assert len(emitted) == 2
+    assert emitted[1].exchange == "Bybit-Linear"

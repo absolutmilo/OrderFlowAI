@@ -70,3 +70,57 @@ def test_store_marks_small_moves_neutral(tmp_path):
     ).fetchone()[0]
     assert label == "neutral"
     store.close()
+
+
+def test_store_migrates_existing_database_and_adds_scalping_horizons(tmp_path):
+    database_path = tmp_path / "existing.sqlite3"
+    old_store = MarketDataStore(database_path, (5,), 1.0)
+    old_store.initialize()
+    old_store.record_observation(
+        1_000,
+        "BTCUSDT",
+        70_000.0,
+        10_000.0,
+        {"cvd_usd": 10_000.0},
+        {},
+        {},
+    )
+    old_store.close()
+
+    store = MarketDataStore(database_path, (5, 300, 600, 900), 1.0)
+    store.initialize()
+    store.record_observation(
+        2_000,
+        "BTCUSDT",
+        70_000.0,
+        10_000.0,
+        {"cvd_usd": 10_000.0},
+        {},
+        {},
+        market_source="Bybit-Linear",
+    )
+    store.record_observation(
+        302_000, "BTCUSDT", 70_070.0, 10_000.0, {}, {}, {},
+        market_source="Bybit-Linear",
+    )
+    store.record_observation(
+        602_000, "BTCUSDT", 70_100.0, 10_000.0, {}, {}, {},
+        market_source="Bybit-Linear",
+    )
+    store.record_observation(
+        902_000, "BTCUSDT", 70_140.0, 10_000.0, {}, {}, {},
+        market_source="Bybit-Linear",
+    )
+
+    rows = store._connection().execute(
+        """
+        SELECT market_source, return_300s_bps, return_900s_bps
+        FROM market_observations
+        ORDER BY observed_at_ms
+        """
+    ).fetchall()
+    assert rows[0] == ("legacy_combined", None, None)
+    assert rows[1][0] == "Bybit-Linear"
+    assert rows[1][1] == (70.0 / 70_000.0) * 10_000
+    assert rows[1][2] == (140.0 / 70_000.0) * 10_000
+    store.close()

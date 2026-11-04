@@ -40,11 +40,23 @@ flowchart TD
 
 > Las puntuaciones actuales son heurísticas, no probabilidades estadísticas calibradas. Los datos públicos de trades no incluyen el libro de órdenes y no permiten confirmar directamente órdenes iceberg, identidad institucional ni actividad HFT. El panel de información del dashboard describe las reglas y sus limitaciones.
 
-## 🧪 Captura local para evaluación y entrenamiento futuro
+## 🧪 Captura, señales y backtesting de scalping
 
 El modo inicial se define en `CONFIG.classifier.default_inference_mode` en `config.py` (actualmente `model`). En modo entrenado, el servidor carga `data/hmm_regime_model.json`; si no puede cargar el artefacto, inicia en modo heurístico e indica el modo efectivo en el dashboard. Usa el botón **MODO** del panel para alternar entre el HMM entrenado y las reglas heurísticas; la página confirma el cambio o muestra el error. Al volver al modo HMM, el estado de inferencia se reinicia.
 
-Después del calentamiento, SQLite guarda un snapshot por segundo de las métricas/features, puntuaciones heurísticas y configuración versionada. La base está en `data/orderflow.sqlite3` y no tiene borrado automático. Para reentrenar el HMM con esa base:
+Después del calentamiento, SQLite guarda un snapshot por segundo de las métricas/features, puntuaciones heurísticas y configuración versionada. Las observaciones de scalping se capturan exclusivamente de Bybit Linear; Binance Spot sigue participando en el clasificador general, pero no se mezcla en las entradas/performance del backtest. Los registros anteriores se migran como `legacy_combined` y se excluyen del backtest nuevo. La base está en `data/orderflow.sqlite3` y no tiene borrado automático.
+
+El panel **Setups de scalping BTCUSDT · Bybit Linear** permite seleccionar hipótesis y hacer backtesting paper, sin envío de órdenes:
+
+1. Deja correr la captura de Bybit hasta reunir al menos 51,429 snapshots (aproximadamente 14.3 horas): así el primer 70 % contiene 36,000 observaciones para entrenamiento y queda un 30 % posterior para validación. Fourier puede requerir más velas completas según la temporalidad seleccionada.
+2. Selecciona la estrategia, temporalidad de 5, 10 o 15 minutos y dirección original/invertida, y pulsa **Optimizar y validar backtest**. La variante invertida conserva los mismos timestamps de entrada y voltea LONG↔SHORT antes de volver a simular las salidas; también vuelve a seleccionar SL/TP solo en entrenamiento. `Flujo + momentum` es la línea base; `Fourier: anomalía + ruptura` busca residuo anómalo, contexto de transición y ruptura posterior; `Volumen excepcional + tendencia` requiere volumen snapshot elevado, EMA rápida/lenta alineada y desequilibrio del flujo en la misma dirección.
+3. Las variantes se prueban con datos Bybit, salidas por SL/TP basados en ATR o tiempo, y una división cronológica 70/30. Se busca la mejor combinación de SL/TP dentro del tramo de entrenamiento; el tramo de validación no participa en esa selección. Comisión taker y slippage por lado son configurables en `CONFIG.scalping` (`config.py`) y se descuentan como costo ida/vuelta. El dashboard compara expectativa bruta/neta en entrenamiento y validación, y desglosa validación por long/short y stop/objetivo/salida por tiempo.
+4. El Fourier de esta versión es una adaptación de corto plazo (ciclos de 8 y 24 velas, ventana de 48 y mínimo de 72 velas de entrenamiento); no replica literalmente las entradas en días ni todos los filtros del script Pine. Requiere dos anomalías residuales consecutivas con |z| > 2.7, zona cerrada, contexto válido y ruptura; puede no generar entradas aunque el número mínimo de velas se haya alcanzado. El panel reporta anomalías, zonas, rupturas y operaciones simuladas para distinguir falta de señales de falta de historial. Las velas OHLC se reconstruyen de snapshots de precio de 1 segundo; el volumen es una tasa proxy derivada de una ventana móvil de trades. La detección de volumen no identifica wallets ni operadores whale. No se incorpora aún SP500/VIX.
+5. Solo la estrategia base original puede activar señales live; direcciones invertidas, Fourier y volumen+tendencia se mantienen como backtests de investigación, no activan señales live ni órdenes. Compara original e invertida usando el mismo corte temporal; no escojas repetidamente por el mismo conjunto de validación porque se convierte en ajuste a la muestra. Resultados pasados no garantizan rendimiento futuro.
+
+Esta primera versión es experimental, no una recomendación ni garantía de rentabilidad. El backtest usa snapshots de precio de 1 segundo; no incluye funding, latencia, cola de ejecución ni impacto real de mercado, y una muestra corta puede sobreajustarse. No se conectan endpoints privados ni se colocan órdenes.
+
+Para reentrenar el HMM de clasificación de regímenes con la base:
 
 ```bash
 python -m src.ml.train_hmm
@@ -52,7 +64,7 @@ python -m src.ml.train_hmm
 
 El entrenamiento requiere al menos 100 observaciones guardadas. Al terminar, reinicia el servidor para cargar el artefacto actualizado.
 
-Para cada snapshot, se registran retornos futuros a 5, 30 y 60 segundos en puntos básicos. Se etiquetan como reversión, continuación o neutral respecto a la dirección del CVD inicial; movimientos inferiores a 1 bp son neutrales. Son etiquetas de resultado derivadas del precio, no ground truth de intención del mercado. Esta colección permite estudiar imbalances y reversión y evaluar ajustes antes de entrenar o activar otro modelo.
+Para cada snapshot Bybit Linear, se registran retornos futuros a 5, 30 y 60 segundos y a 5, 10 y 15 minutos en puntos básicos. Se etiquetan como reversión, continuación o neutral respecto a la dirección del CVD inicial; movimientos inferiores a 1 bp son neutrales. Son etiquetas de resultado derivadas del precio, no ground truth de intención del mercado.
 
 ---
 

@@ -44,6 +44,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnTestAudio = document.getElementById('btn-test-audio');
   const sliderVolume = document.getElementById('slider-volume');
   const selectThreshold = document.getElementById('select-threshold');
+  const btnScalpBacktest = document.getElementById('btn-scalp-backtest');
+  const selectScalpStrategy = document.getElementById('scalp-strategy');
+  const selectScalpTimeframe = document.getElementById('scalp-timeframe');
+  const selectScalpDirection = document.getElementById('scalp-direction');
 
   const MAX_TAPE_ROWS = 120;
   let socket = null;
@@ -126,6 +130,126 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function renderScalpingSignal(scalping) {
+    if (!scalping) return;
+    const signal = scalping.signal || { status: 'no_setup' };
+    const signalElement = document.getElementById('scalp-signal');
+    const detailElement = document.getElementById('scalp-signal-detail');
+    const dataStatusElement = document.getElementById('scalp-data-status');
+    if (!signalElement || !detailElement) return;
+
+    signalElement.classList.remove('long', 'short');
+    if (signal.status === 'signal') {
+      signalElement.textContent = `SETUP ${signal.direction}: ${Number(signal.entry_price).toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+      signalElement.classList.add(signal.direction === 'LONG' ? 'long' : 'short');
+      detailElement.textContent = `SL ${Number(signal.stop_loss).toLocaleString('en-US', { maximumFractionDigits: 2 })} · TP ${Number(signal.take_profit).toLocaleString('en-US', { maximumFractionDigits: 2 })} · ATR ${signal.atr_bps} bps · ${signal.horizon_minutes} min`;
+    } else if (signal.status === 'no_setup') {
+      signalElement.textContent = scalping.alert_enabled ? 'Sin setup confirmado' : 'Esperando backtest validado';
+      detailElement.textContent = scalping.alert_enabled
+        ? 'Se requiere una secuencia confirmada de flujo y momentum.'
+        : 'No se muestran entradas hasta que la validación neta fuera de muestra sea suficiente.';
+    } else {
+      signalElement.textContent = 'Señal no disponible';
+      detailElement.textContent = signal.message || '';
+    }
+
+    if (dataStatusElement && scalping.observations !== undefined) {
+      const required = scalping.minimum_observations || scalping.minimum_training_observations;
+      dataStatusElement.textContent = `Histórico ${scalping.source}: ${Number(scalping.observations).toLocaleString('es-ES')} / ${Number(required).toLocaleString('es-ES')} snapshots totales (${Number(scalping.minimum_training_observations || required).toLocaleString('es-ES')} para entrenamiento).`;
+    }
+  }
+
+  function renderScalpingBacktest(backtest) {
+    const resultElement = document.getElementById('scalp-backtest-result');
+    const metricsElement = document.getElementById('scalp-backtest-metrics');
+    const breakdownElement = document.getElementById('scalp-backtest-breakdown');
+    const exitsElement = document.getElementById('scalp-backtest-exits');
+    if (!resultElement || !metricsElement || !backtest) return;
+
+    resultElement.textContent = backtest.message || `Resultado: ${backtest.status}`;
+    if (backtest.validation) {
+      const validation = backtest.validation;
+      const training = backtest.training;
+      const parameters = backtest.parameters;
+      metricsElement.textContent = `Estrategia: ${backtest.strategy_name} · ${backtest.timeframe_minutes} min · dirección ${backtest.direction_mode_name || 'Original'}. Entrenamiento (${training.trade_count} ops): bruto ${training.gross_expectancy_bps} bps/operación, neto ${training.expectancy_bps} bps/operación. Validación (${validation.trade_count} ops): bruto ${validation.gross_expectancy_bps} bps/operación, neto ${validation.expectancy_bps} bps/operación · aciertos netos ${validation.win_rate_pct}% · PF ${validation.profit_factor} · DD ${validation.max_drawdown_bps} bps · costos ${validation.total_costs_bps} bps. SL ${parameters.stop_atr_multiple} ATR, TP ${parameters.target_atr_multiple} ATR.`;
+      if (breakdownElement && validation.by_direction) {
+        const long = validation.by_direction.LONG;
+        const short = validation.by_direction.SHORT;
+        breakdownElement.textContent = `Por dirección — LONG: ${long.trade_count} ops, neto ${long.expectancy_bps} bps/op, aciertos ${long.win_rate_pct}%, PF ${long.profit_factor}; SHORT: ${short.trade_count} ops, neto ${short.expectancy_bps} bps/op, aciertos ${short.win_rate_pct}%, PF ${short.profit_factor}.`;
+      }
+      if (exitsElement && validation.by_exit_reason) {
+        const exits = validation.by_exit_reason;
+        exitsElement.textContent = `Salidas — stop: ${exits.stop_loss.trade_count} (neto ${exits.stop_loss.total_net_bps} bps); objetivo: ${exits.take_profit.trade_count} (neto ${exits.take_profit.total_net_bps} bps); tiempo: ${exits.time.trade_count} (neto ${exits.time.total_net_bps} bps).`;
+      }
+    } else {
+      if (backtest.status === 'no_trainable_setup') {
+        const diagnostics = backtest.signal_diagnostics || {};
+        const bars = Number(backtest.training_bars || 0);
+        const requiredBars = Number(backtest.required_training_bars || 0);
+        metricsElement.textContent = `${backtest.strategy_name} · ${backtest.timeframe_minutes} min · dirección ${backtest.direction_mode_name || 'Original'}. ${bars} velas de entrenamiento${requiredBars ? ` (${requiredBars} requeridas)` : ''} · ${Number(backtest.training_signal_count || 0)} señales · máximo ${Number(backtest.max_training_trades || 0)} operaciones simuladas; se requieren ${Number(backtest.minimum_training_trades || 0)}.`;
+        if (breakdownElement) {
+          breakdownElement.textContent = diagnostics.complete_bars !== undefined
+            ? `Diagnóstico Fourier: ${diagnostics.raw_anomalies} anomalías · ${diagnostics.persistent_anomaly_bars} barras anómalas persistentes · ${diagnostics.completed_zones} zonas cerradas · ${diagnostics.context_qualified_bars} barras con contexto · ${diagnostics.breakout_candidates} rupturas.`
+            : '';
+        }
+      } else {
+        metricsElement.textContent = backtest.observations !== undefined
+          ? `${backtest.strategy_name || ''} · ${backtest.timeframe_minutes || ''} min. ${Number(backtest.observations).toLocaleString('es-ES')} observaciones Bybit Linear; ${Number(backtest.training_observations || 0).toLocaleString('es-ES')} snapshots en entrenamiento${backtest.training_bars !== undefined ? `; ${backtest.training_bars}/${backtest.required_training_bars || '?'} velas completas` : ''}${backtest.required_training_observations !== undefined ? `; se requieren ${Number(backtest.required_training_observations).toLocaleString('es-ES')} para entrenar y ${Number(backtest.required_observations || 0).toLocaleString('es-ES')} en total` : ''}.`
+          : '';
+        if (breakdownElement) breakdownElement.textContent = '';
+      }
+      if (exitsElement) exitsElement.textContent = '';
+    }
+  }
+
+  async function loadScalpingStatus() {
+    try {
+      const response = await fetch('/api/scalping/status');
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || `Error HTTP ${response.status}`);
+      renderScalpingSignal(data);
+      if (data.backtest) renderScalpingBacktest(data.backtest);
+    } catch (error) {
+      console.error('Error consultando estado de scalping:', error);
+      const status = document.getElementById('scalp-data-status');
+      if (status) status.textContent = `No se pudo consultar el histórico: ${error.message}`;
+    }
+  }
+
+  if (btnScalpBacktest) {
+    btnScalpBacktest.addEventListener('click', async () => {
+      btnScalpBacktest.disabled = true;
+      btnScalpBacktest.textContent = 'Optimizando...';
+      const resultElement = document.getElementById('scalp-backtest-result');
+      if (resultElement) resultElement.textContent = 'Ejecutando optimización cronológica; puede tardar un momento.';
+      try {
+        const query = new URLSearchParams({
+          strategy: selectScalpStrategy ? selectScalpStrategy.value : 'flow_momentum',
+          timeframe_minutes: selectScalpTimeframe ? selectScalpTimeframe.value : '5',
+          direction_mode: selectScalpDirection ? selectScalpDirection.value : 'original',
+        });
+        const response = await fetch(`/api/scalping/backtest?${query}`, { method: 'POST' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || `Error HTTP ${response.status}`);
+        renderScalpingBacktest(data);
+        renderScalpingSignal({
+          signal: { status: 'no_setup' },
+          alert_enabled: data.alert_enabled,
+          source: data.source,
+        });
+        await loadScalpingStatus();
+      } catch (error) {
+        console.error('Error ejecutando el backtest de scalping:', error);
+        if (resultElement) resultElement.textContent = `Backtest fallido: ${error.message}`;
+      } finally {
+        btnScalpBacktest.disabled = false;
+        btnScalpBacktest.textContent = 'Optimizar y validar backtest';
+      }
+    });
+  }
+
+  loadScalpingStatus();
+
   function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws/stream`;
@@ -150,11 +274,19 @@ document.addEventListener('DOMContentLoaded', () => {
           if (data.metrics) updateMetrics(data.metrics);
           if (data.exchange_stats) updateExchangeStats(data.exchange_stats);
           updateSystemMode(data.inference_mode, data.data_capture_status, data.detector_config);
+          renderScalpingSignal(data.scalping);
         } else if (data.type === 'snapshot') {
           updateProbabilities(data.probabilities);
           if (data.metrics) updateMetrics(data.metrics);
           if (data.exchange_stats) updateExchangeStats(data.exchange_stats);
           updateSystemMode(data.inference_mode, data.data_capture_status, data.detector_config);
+          renderScalpingSignal(data.scalping);
+        } else if (data.type === 'scalping_backtest') {
+          renderScalpingBacktest(data.backtest);
+          renderScalpingSignal({
+            signal: { status: 'no_setup' },
+            alert_enabled: data.alert_enabled,
+          });
         } else if (data.type === 'mode_change') {
           updateSystemMode(data.inference_mode);
         } else if (data.type === 'mode_error') {

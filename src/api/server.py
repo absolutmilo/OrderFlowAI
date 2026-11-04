@@ -22,6 +22,7 @@ from src.core.trade_model import AggregatedTrade, RawTrade
 from src.core.aggregator import TradeAggregator
 from src.core.classifier import MicrostructureClassifier
 from src.core.market_data_store import MarketDataStore
+from src.core.scalping import STRATEGIES, ScalpingEngine
 from src.connectors.binance import BinanceConnector
 from src.connectors.bybit import BybitLinearConnector
 from config import CONFIG
@@ -41,12 +42,14 @@ app.add_middleware(
 
 # Shared components
 classifier = MicrostructureClassifier()
+scalp_classifier = MicrostructureClassifier(inference_mode="heuristic")
 database_path = Path(__file__).resolve().parents[2] / CONFIG.data_capture.database_path
 market_data_store = MarketDataStore(
     database_path,
     CONFIG.data_capture.label_horizons_seconds,
     CONFIG.data_capture.label_min_move_bps,
 )
+scalping_engine = ScalpingEngine(database_path, CONFIG.scalping)
 active_websockets: Set[WebSocket] = set()
 connectors: List = []
 trade_counter = 0
@@ -86,26 +89,38 @@ async def handle_aggregated_trade(agg_trade: AggregatedTrade):
     metrics = classifier.get_current_metrics()
 
     now_ms = int(time.time() * 1000)
-    if (
-        metrics is not None
-        and classifier.is_warmed_up()
-        and now_ms - last_capture_at_ms >= CONFIG.data_capture.sample_interval_seconds * 1000
-    ):
-        last_capture_at_ms = now_ms
-        try:
-            market_data_store.record_observation(
-                observed_at_ms=now_ms,
-                symbol=agg_trade.symbol,
-                price=metrics.current_price,
-                cvd_usd=metrics.cvd_usd,
-                features=asdict(metrics),
-                heuristic_scores=asdict(probabilities),
-                configuration=asdict(CONFIG),
-            )
-            data_capture_status = "recording"
-        except sqlite3.Error:
-            logger.exception("No se pudo guardar el snapshot de mercado en SQLite.")
-            data_capture_status = "error"
+    if agg_trade.exchange == CONFIG.scalping.exchange:
+        scalp_classifier.add_trade(agg_trade)
+        scalp_probabilities = scalp_classifier.classify()
+        scalp_metrics = scalp_classifier.get_current_metrics()
+
+        if (
+            scalp_metrics is not None
+            and scalp_classifier.is_warmed_up()
+            and now_ms - last_capture_at_ms >= CONFIG.data_capture.sample_interval_seconds * 1000
+        ):
+            last_capture_at_ms = now_ms
+            try:
+                scalp_features = asdict(scalp_metrics)
+                market_data_store.record_observation(
+                    observed_at_ms=now_ms,
+                    symbol=agg_trade.symbol,
+                    price=scalp_metrics.current_price,
+                    cvd_usd=scalp_metrics.cvd_usd,
+                    features=scalp_features,
+                    heuristic_scores=asdict(scalp_probabilities),
+                    configuration=asdict(CONFIG),
+                    market_source=CONFIG.scalping.exchange,
+                )
+                scalping_engine.observe(
+                    now_ms,
+                    scalp_metrics.current_price,
+                    scalp_features,
+                )
+                data_capture_status = "recording"
+            except sqlite3.Error:
+                logger.exception("No se pudo guardar el snapshot Bybit Linear en SQLite.")
+                data_capture_status = "error"
 
     # Pattern tags
     patterns = []
@@ -131,6 +146,10 @@ async def handle_aggregated_trade(agg_trade: AggregatedTrade):
         "inference_mode": classifier.inference_mode,
         "data_capture_status": data_capture_status,
         "detector_config": asdict(CONFIG.classifier),
+        "scalping": {
+            "signal": scalping_engine.last_signal or {"status": "no_setup"},
+            "alert_enabled": scalping_engine.parameters is not None,
+        },
     }
     await broadcast_message(broadcast_data)
 
@@ -170,7 +189,7 @@ async def on_startup():
     # 2. Bybit Linear (Perpetual futures order flow)
     if CONFIG.exchange.enable_bybit_linear:
         bybit_conn = BybitLinearConnector(
-            symbol=CONFIG.exchange.symbol,
+            symbol=CONFIG.scalping.symbol,
             on_trade_callback=handle_raw_trade
         )
         connectors.append(bybit_conn)
@@ -207,6 +226,10 @@ async def websocket_endpoint(websocket: WebSocket):
             "inference_mode": classifier.inference_mode,
             "data_capture_status": data_capture_status,
             "detector_config": asdict(CONFIG.classifier),
+            "scalping": {
+                "signal": scalping_engine.last_signal or {"status": "no_setup"},
+                "alert_enabled": scalping_engine.parameters is not None,
+            },
         }))
 
         while True:
@@ -269,6 +292,68 @@ async def set_inference_mode_endpoint(payload: dict):
         "inference_mode": new_mode,
     })
     return JSONResponse({"status": "ok", "inference_mode": new_mode})
+
+
+@app.get("/api/scalping/status")
+async def get_scalping_status():
+    if database_path.exists():
+        with sqlite3.connect(database_path, timeout=5) as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*), MIN(observed_at_ms), MAX(observed_at_ms)
+                FROM market_observations
+                WHERE market_source = ? AND symbol = ?
+                """,
+                (CONFIG.scalping.exchange, CONFIG.scalping.symbol),
+            ).fetchone()
+    else:
+        row = (0, None, None)
+
+    return JSONResponse({
+        **scalping_engine.status(),
+        "observations": row[0],
+        "first_observation_ms": row[1],
+        "last_observation_ms": row[2],
+        "minimum_training_observations": CONFIG.scalping.min_training_observations,
+        "minimum_observations": scalping_engine.status()["minimum_observations"],
+        "strategies": STRATEGIES,
+        "cost_configuration": {
+            "taker_fee_bps_per_side": CONFIG.scalping.taker_fee_bps_per_side,
+            "slippage_bps_per_side": CONFIG.scalping.slippage_bps_per_side,
+        },
+    })
+
+
+@app.post("/api/scalping/backtest")
+async def run_scalping_backtest(
+    strategy: str = "flow_momentum",
+    timeframe_minutes: int = 5,
+    direction_mode: str = "original",
+):
+    if strategy not in STRATEGIES:
+        raise HTTPException(status_code=400, detail="Estrategia de scalping no reconocida.")
+    if timeframe_minutes not in (5, 10, 15):
+        raise HTTPException(status_code=400, detail="El timeframe debe ser 5, 10 o 15 minutos.")
+    if direction_mode not in ("original", "inverse"):
+        raise HTTPException(status_code=400, detail="La dirección debe ser original o inverse.")
+
+    try:
+        result = await asyncio.to_thread(
+            scalping_engine.run_backtest,
+            strategy,
+            timeframe_minutes,
+            direction_mode,
+        )
+    except (sqlite3.Error, ValueError, json.JSONDecodeError) as error:
+        logger.exception("No se pudo ejecutar el backtest de scalping.")
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    await broadcast_message({
+        "type": "scalping_backtest",
+        "backtest": result,
+        "alert_enabled": result.get("alert_enabled", False),
+    })
+    return JSONResponse(result)
 
 
 @app.get("/api/status")

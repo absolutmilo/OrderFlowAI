@@ -81,10 +81,54 @@ class ScalpingEngine:
             self.last_backtest = result
             return result
 
+        gaps_seconds = np.diff(timestamps) / 1000.0
+        maximum_allowed_gap = self.config.max_snapshot_gap_seconds
+        active_seconds = float(
+            np.sum(gaps_seconds[gaps_seconds <= maximum_allowed_gap])
+        )
+        snapshot_coverage = min(1.0, count / max(1.0, active_seconds))
+        maximum_gap_seconds = (
+            float(np.max(gaps_seconds))
+            if count > 1 else 0.0
+        )
+        data_quality = {
+            "snapshot_coverage_pct": round(snapshot_coverage * 100.0, 2),
+            "maximum_snapshot_gap_seconds": round(maximum_gap_seconds, 2),
+        }
+        minimum_coverage = getattr(self.config, "minimum_snapshot_coverage", 0.80)
+        if snapshot_coverage < minimum_coverage:
+            result = {
+                "status": "insufficient_data_quality",
+                "message": (
+                    f"La cobertura dentro de los tramos activos es "
+                    f"{snapshot_coverage * 100:.1f}%; "
+                    f"se requiere al menos {minimum_coverage * 100:.0f}%. "
+                    "Los huecos impiden validar entradas y salidas con fiabilidad."
+                ),
+                "observations": count,
+                "training_observations": split_index,
+                "source": self.config.exchange,
+                "strategy": strategy,
+                "strategy_name": STRATEGIES[strategy],
+                "timeframe_minutes": timeframe_minutes,
+                "direction_mode": direction_mode,
+                **data_quality,
+            }
+            self.parameters = None
+            self.last_signal = None
+            self.last_backtest = result
+            return result
+
+        elapsed_seconds = (timestamps[-1] - timestamps[0]) / 1000.0
         bars = None
         if strategy != "flow_momentum":
             bars = self._aggregate_bars(
-                timestamps, prices, imbalance, volume_rate, timeframe_minutes
+                timestamps,
+                prices,
+                imbalance,
+                volume_rate,
+                timeframe_minutes,
+                max_snapshot_gap_seconds=self.config.max_snapshot_gap_seconds,
             )
             train_bar_count = int(np.searchsorted(bars["snapshot_indices"], split_index))
             minimum_bars = 72 if strategy == "fourier_breakout" else 32
@@ -100,6 +144,7 @@ class ScalpingEngine:
                     "training_observations": split_index,
                     "training_bars": train_bar_count,
                     "required_training_bars": minimum_bars,
+                    **data_quality,
                     "source": self.config.exchange,
                     "strategy": strategy,
                     "strategy_name": STRATEGIES[strategy],
@@ -110,7 +155,6 @@ class ScalpingEngine:
                 self.last_backtest = result
                 return result
 
-        elapsed_seconds = (timestamps[-1] - timestamps[0]) / 1000.0
         train_end_ms = int(timestamps[split_index - 1])
         validation_start_ms = int(timestamps[split_index])
         validation_end_ms = int(timestamps[-1])
@@ -119,7 +163,12 @@ class ScalpingEngine:
         best_training = None
         horizon_seconds = timeframe_minutes * 60
         atr_by_horizon = {
-            horizon_seconds: self._atr_bps(timestamps, prices, horizon_seconds)
+            horizon_seconds: self._atr_bps(
+                timestamps,
+                prices,
+                horizon_seconds,
+                self.config.max_snapshot_gap_seconds,
+            )
         }
         signal_cache = {}
 
@@ -211,6 +260,7 @@ class ScalpingEngine:
                 "observations": count,
                 "training_observations": split_index,
                 "validation_observations": count - split_index,
+                **data_quality,
                 "training_bars": (
                     int(np.searchsorted(bars["snapshot_indices"], split_index))
                     if bars is not None else None
@@ -303,6 +353,7 @@ class ScalpingEngine:
                 else "Original"
             ),
             "observations": count,
+            **data_quality,
             "training_observations": split_index,
             "validation_observations": count - split_index,
             "training_bars": (
@@ -464,6 +515,7 @@ class ScalpingEngine:
         imbalance: np.ndarray,
         volume_rate: np.ndarray,
         timeframe_minutes: int,
+        max_snapshot_gap_seconds: float = 5.0,
     ) -> Dict[str, np.ndarray]:
         interval_ms = timeframe_minutes * 60_000
         bucket_ids = timestamps // interval_ms
@@ -474,7 +526,16 @@ class ScalpingEngine:
         ))
         starts = boundaries[:-1]
         ends = boundaries[1:]
-        complete = (timestamps[ends - 1] - timestamps[starts]) >= int(interval_ms * 0.8)
+        minimum_snapshots = int(timeframe_minutes * 60 * 0.8)
+        maximum_gaps = np.asarray([
+            np.max(np.diff(timestamps[start:end])) if end - start > 1 else interval_ms
+            for start, end in zip(starts, ends)
+        ])
+        complete = (
+            ((timestamps[ends - 1] - timestamps[starts]) >= int(interval_ms * 0.8))
+            & ((ends - starts) >= minimum_snapshots)
+            & (maximum_gaps <= max_snapshot_gap_seconds * 1000)
+        )
         bars = {
             "timestamps": timestamps[ends - 1],
             "snapshot_indices": ends - 1,
@@ -702,20 +763,34 @@ class ScalpingEngine:
         return signals
 
     @staticmethod
-    def _atr_bps(timestamps: np.ndarray, prices: np.ndarray, horizon_seconds: int) -> np.ndarray:
+    def _atr_bps(
+        timestamps: np.ndarray,
+        prices: np.ndarray,
+        horizon_seconds: int,
+        max_snapshot_gap_seconds: float = 5.0,
+    ) -> np.ndarray:
         count = len(prices)
         log_returns_bps = np.zeros(count, dtype=np.float64)
+        valid_intervals = np.zeros(count, dtype=bool)
         if count > 1:
             elapsed = np.maximum(0.001, np.diff(timestamps) / 1000.0)
-            log_returns_bps[1:] = (
-                np.diff(np.log(np.maximum(prices, 1e-12))) * 10000.0 / np.sqrt(elapsed)
+            valid_intervals[1:] = elapsed <= max_snapshot_gap_seconds
+            log_returns_bps[1:] = np.where(
+                valid_intervals[1:],
+                np.diff(np.log(np.maximum(prices, 1e-12)))
+                * 10000.0 / np.sqrt(elapsed),
+                0.0,
             )
 
         squared_prefix = np.concatenate(([0.0], np.cumsum(log_returns_bps ** 2)))
         return_prefix = np.concatenate(([0.0], np.cumsum(log_returns_bps)))
+        valid_prefix = np.concatenate(([0], np.cumsum(valid_intervals, dtype=np.int64)))
         start_indices = np.searchsorted(timestamps, timestamps - 60_000, side="left")
         indices = np.arange(count)
-        samples = np.maximum(1, indices - start_indices)
+        samples = np.maximum(
+            1,
+            valid_prefix[indices + 1] - valid_prefix[start_indices + 1],
+        )
         means = (return_prefix[indices + 1] - return_prefix[start_indices + 1]) / samples
         second_moment = (
             squared_prefix[indices + 1] - squared_prefix[start_indices + 1]
@@ -803,8 +878,17 @@ class ScalpingEngine:
             signed_return = None
             exit_index = close_limit - 1
             exit_reason = "time"
+            previous_index = entry_index
+            data_gap = False
 
             for index in range(entry_index + 1, close_limit):
+                if (
+                    timestamps[index] - timestamps[previous_index]
+                    > self.config.max_snapshot_gap_seconds * 1000
+                ):
+                    data_gap = True
+                    break
+                previous_index = index
                 raw_return = np.log(prices[index] / entry_price) * 10000.0
                 signed = direction * raw_return
                 if signed <= -stop_distance:
@@ -817,6 +901,8 @@ class ScalpingEngine:
                     exit_index = index
                     exit_reason = "take_profit"
                     break
+            if data_gap:
+                continue
             if signed_return is None:
                 if not horizon_reached:
                     continue

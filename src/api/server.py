@@ -25,6 +25,7 @@ from src.core.market_data_store import MarketDataStore
 from src.core.scalping import STRATEGIES, ScalpingEngine
 from src.connectors.binance import BinanceConnector
 from src.connectors.bybit import BybitLinearConnector
+from src.api.chart_routes import router as chart_router
 from config import CONFIG
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -60,6 +61,16 @@ data_capture_status = "starting"
 
 def get_inference_mode() -> str:
     return classifier.inference_mode
+
+
+def snapshot_scores(heuristic_probabilities, hmm_probabilities=None) -> dict:
+    scores = asdict(heuristic_probabilities)
+    scores["hmm_4"] = (
+        {"available": True, **asdict(hmm_probabilities)}
+        if hmm_probabilities is not None
+        else {"available": False}
+    )
+    return scores
 
 
 async def broadcast_message(message: dict):
@@ -99,8 +110,19 @@ async def handle_aggregated_trade(agg_trade: AggregatedTrade):
             and scalp_classifier.is_warmed_up()
             and now_ms - last_capture_at_ms >= CONFIG.data_capture.sample_interval_seconds * 1000
         ):
+            previous_capture_at_ms = last_capture_at_ms
             last_capture_at_ms = now_ms
             try:
+                hmm_probabilities = None
+                if scalp_classifier.hmm_model is not None:
+                    if (
+                        previous_capture_at_ms
+                        and now_ms - previous_capture_at_ms
+                        > CONFIG.scalping.max_snapshot_gap_seconds * 1000
+                    ):
+                        scalp_classifier.hmm_model.reset()
+                    hmm_probabilities = scalp_classifier.classify(mode="model")
+
                 scalp_features = asdict(scalp_metrics)
                 market_data_store.record_observation(
                     observed_at_ms=now_ms,
@@ -108,7 +130,10 @@ async def handle_aggregated_trade(agg_trade: AggregatedTrade):
                     price=scalp_metrics.current_price,
                     cvd_usd=scalp_metrics.cvd_usd,
                     features=scalp_features,
-                    heuristic_scores=asdict(scalp_probabilities),
+                    heuristic_scores=snapshot_scores(
+                        scalp_probabilities,
+                        hmm_probabilities,
+                    ),
                     configuration=asdict(CONFIG),
                     market_source=CONFIG.scalping.exchange,
                 )
@@ -300,22 +325,35 @@ async def get_scalping_status():
         with sqlite3.connect(database_path, timeout=5) as connection:
             row = connection.execute(
                 """
-                SELECT COUNT(*), MIN(observed_at_ms), MAX(observed_at_ms)
+                SELECT COUNT(*), MIN(observed_at_ms), MAX(observed_at_ms),
+                       SUM(
+                           CASE
+                               WHEN CASE
+                                   WHEN json_valid(heuristic_scores_json)
+                                   THEN json_extract(heuristic_scores_json, '$.hmm_4.available')
+                                   ELSE 0
+                               END = 1
+                               THEN 1 ELSE 0
+                           END
+                       )
                 FROM market_observations
                 WHERE market_source = ? AND symbol = ?
                 """,
                 (CONFIG.scalping.exchange, CONFIG.scalping.symbol),
             ).fetchone()
     else:
-        row = (0, None, None)
+        row = (0, None, None, 0)
 
     return JSONResponse({
         **scalping_engine.status(),
         "observations": row[0],
         "first_observation_ms": row[1],
         "last_observation_ms": row[2],
+        "hmm_snapshot_count": row[3] or 0,
         "minimum_training_observations": CONFIG.scalping.min_training_observations,
         "minimum_observations": scalping_engine.status()["minimum_observations"],
+        "max_snapshot_gap_seconds": CONFIG.scalping.max_snapshot_gap_seconds,
+        "minimum_snapshot_coverage": CONFIG.scalping.minimum_snapshot_coverage,
         "strategies": STRATEGIES,
         "cost_configuration": {
             "taker_fee_bps_per_side": CONFIG.scalping.taker_fee_bps_per_side,
@@ -375,6 +413,67 @@ async def get_status():
     })
 
 
+@app.get("/api/classification-history")
+async def get_classification_history(mode: str = "model"):
+    if mode not in ("model", "heuristic"):
+        raise HTTPException(
+            status_code=400,
+            detail="El modo debe ser model o heuristic.",
+        )
+    if not database_path.exists():
+        return JSONResponse({"mode": mode, "samples": []})
+
+    cutoff_ms = int(time.time() * 1000) - 60 * 60 * 1000
+    with sqlite3.connect(database_path, timeout=5) as connection:
+        rows = connection.execute(
+            """
+            SELECT observed_at_ms, heuristic_scores_json
+            FROM market_observations
+            WHERE market_source = ? AND symbol = ? AND observed_at_ms >= ?
+            ORDER BY observed_at_ms ASC
+            """,
+            (CONFIG.scalping.exchange, CONFIG.scalping.symbol, cutoff_ms),
+        ).fetchall()
+
+    keys = (
+        "algo_institutional",
+        "iceberg",
+        "absorption",
+        "retail",
+        "hft_competition",
+    )
+    samples = []
+    for observed_at_ms, scores_json in rows:
+        try:
+            scores = json.loads(scores_json)
+        except json.JSONDecodeError:
+            logger.warning(
+                "Se omitió un snapshot con scores inválidos en %s.",
+                observed_at_ms,
+            )
+            continue
+        if not isinstance(scores, dict):
+            logger.warning(
+                "Se omitió un snapshot con formato de scores no válido en %s.",
+                observed_at_ms,
+            )
+            continue
+        if mode == "model":
+            hmm_scores = scores.get("hmm_4")
+            if not isinstance(hmm_scores, dict) or not hmm_scores.get("available"):
+                continue
+            scores = hmm_scores
+        samples.append({
+            "timestamp_ms": observed_at_ms,
+            "values": {
+                key: scores.get(key, 0.0)
+                for key in keys
+            },
+        })
+
+    return JSONResponse({"mode": mode, "samples": samples})
+
+
 # Static files mount
 static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
 if os.path.exists(static_dir):
@@ -382,4 +481,7 @@ if os.path.exists(static_dir):
 
     @app.get("/")
     async def serve_index():
-        return FileResponse(os.path.join(static_dir, "index.html"))
+        return FileResponse(
+            os.path.join(static_dir, "index.html"),
+            headers={"Cache-Control": "no-cache"},
+        )

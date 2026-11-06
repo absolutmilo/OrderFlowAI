@@ -1,6 +1,6 @@
 /**
  * Main Frontend Application Script.
- * Manages WebSocket connection, live UI updates, probability gauges, and tape rendering.
+ * Manages WebSocket connection, live UI updates, probability sparklines, and tape rendering.
  */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -11,6 +11,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const elConnectionStatus = document.getElementById('connection-status');
   const elStatusText = document.getElementById('status-text');
   const elTapeList = document.getElementById('tape-list');
+  const elWhaleTapeList = document.getElementById('whale-tape-list');
+  const elWhaleQueueCount = document.getElementById('whale-queue-count');
+  const btnClearWhaleQueue = document.getElementById('clear-whale-queue');
   const elPatternNotes = document.getElementById('pattern-notes');
   const elFeedStats = document.getElementById('feed-stats');
   const elClassificationBadge = document.getElementById('classification-badge');
@@ -23,21 +26,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Probability Elements
   const elProbAlgo = document.getElementById('prob-algo');
-  const elBarAlgo = document.getElementById('bar-algo');
+  const elSparkAlgo = document.getElementById('spark-algo');
 
   const elProbIceberg = document.getElementById('prob-iceberg');
-  const elBarIceberg = document.getElementById('bar-iceberg');
+  const elSparkIceberg = document.getElementById('spark-iceberg');
   const elDescIceberg = document.getElementById('desc-iceberg');
 
   const elProbAbsorption = document.getElementById('prob-absorption');
-  const elBarAbsorption = document.getElementById('bar-absorption');
+  const elSparkAbsorption = document.getElementById('spark-absorption');
   const elDescAbsorption = document.getElementById('desc-absorption');
 
   const elProbRetail = document.getElementById('prob-retail');
-  const elBarRetail = document.getElementById('bar-retail');
+  const elSparkRetail = document.getElementById('spark-retail');
 
   const elProbHft = document.getElementById('prob-hft');
-  const elBarHft = document.getElementById('bar-hft');
+  const elSparkHft = document.getElementById('spark-hft');
 
   // Audio Controls
   const btnToggleAudio = document.getElementById('btn-toggle-audio');
@@ -50,9 +53,26 @@ document.addEventListener('DOMContentLoaded', () => {
   const selectScalpDirection = document.getElementById('scalp-direction');
 
   const MAX_TAPE_ROWS = 120;
+  const MAX_WHALE_ROWS = 120;
+  const PROBABILITY_WINDOW_MS = 60 * 60 * 1000;
+  const PROBABILITY_SAMPLE_MS = 5 * 1000;
+  const PROBABILITY_SERIES = {
+    algo_institutional: { path: elSparkAlgo, dot: document.getElementById('spark-dot-algo') },
+    iceberg: { path: elSparkIceberg, dot: document.getElementById('spark-dot-iceberg') },
+    absorption: { path: elSparkAbsorption, dot: document.getElementById('spark-dot-absorption') },
+    retail: { path: elSparkRetail, dot: document.getElementById('spark-dot-retail') },
+    hft_competition: { path: elSparkHft, dot: document.getElementById('spark-dot-hft') },
+  };
+  const probabilityHistory = Object.fromEntries(
+    Object.keys(PROBABILITY_SERIES).map((key) => [key, []])
+  );
   let socket = null;
   let reconnectTimer = null;
   let modeStatusTimer = null;
+  let probabilityMode = null;
+  let lastProbabilitySampleBucket = -1;
+  let historyRequestId = 0;
+  let whaleQueueSize = 0;
 
   btnDetectorInfo.addEventListener('click', () => infoDialog.showModal());
   btnCloseInfo.addEventListener('click', () => infoDialog.close());
@@ -77,6 +97,20 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnTestAudio) {
     btnTestAudio.addEventListener('click', () => {
       window.audioEngine.testChime();
+    });
+  }
+
+  if (btnClearWhaleQueue) {
+    btnClearWhaleQueue.addEventListener('click', () => {
+      if (elWhaleTapeList) {
+        elWhaleTapeList.replaceChildren();
+        const emptyMessage = document.createElement('p');
+        emptyMessage.className = 'tape-empty';
+        emptyMessage.textContent = 'Las transacciones ≥ $100k aparecerán aquí.';
+        elWhaleTapeList.appendChild(emptyMessage);
+      }
+      whaleQueueSize = 0;
+      updateWhaleQueueCount();
     });
   }
 
@@ -155,7 +189,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (dataStatusElement && scalping.observations !== undefined) {
       const required = scalping.minimum_observations || scalping.minimum_training_observations;
-      dataStatusElement.textContent = `Histórico ${scalping.source}: ${Number(scalping.observations).toLocaleString('es-ES')} / ${Number(required).toLocaleString('es-ES')} snapshots totales (${Number(scalping.minimum_training_observations || required).toLocaleString('es-ES')} para entrenamiento).`;
+      const hmmCount = Number(scalping.hmm_snapshot_count || 0).toLocaleString('es-ES');
+      dataStatusElement.textContent = `Histórico ${scalping.source}: ${Number(scalping.observations).toLocaleString('es-ES')} / ${Number(required).toLocaleString('es-ES')} snapshots (${Number(scalping.minimum_training_observations || required).toLocaleString('es-ES')} para entrenamiento) · ${hmmCount} con estado HMM-4.`;
     }
   }
 
@@ -193,8 +228,10 @@ document.addEventListener('DOMContentLoaded', () => {
             : '';
         }
       } else {
-        metricsElement.textContent = backtest.observations !== undefined
-          ? `${backtest.strategy_name || ''} · ${backtest.timeframe_minutes || ''} min. ${Number(backtest.observations).toLocaleString('es-ES')} observaciones Bybit Linear; ${Number(backtest.training_observations || 0).toLocaleString('es-ES')} snapshots en entrenamiento${backtest.training_bars !== undefined ? `; ${backtest.training_bars}/${backtest.required_training_bars || '?'} velas completas` : ''}${backtest.required_training_observations !== undefined ? `; se requieren ${Number(backtest.required_training_observations).toLocaleString('es-ES')} para entrenar y ${Number(backtest.required_observations || 0).toLocaleString('es-ES')} en total` : ''}.`
+        metricsElement.textContent = backtest.status === 'insufficient_data_quality'
+          ? `Cobertura ${Number(backtest.snapshot_coverage_pct || 0)}% · hueco máximo ${Number(backtest.maximum_snapshot_gap_seconds || 0)} s. Se requiere captura continua para validar el backtest.`
+          : backtest.observations !== undefined
+            ? `${backtest.strategy_name || ''} · ${backtest.timeframe_minutes || ''} min. ${Number(backtest.observations).toLocaleString('es-ES')} observaciones Bybit Linear; ${Number(backtest.training_observations || 0).toLocaleString('es-ES')} snapshots en entrenamiento${backtest.training_bars !== undefined ? `; ${backtest.training_bars}/${backtest.required_training_bars || '?'} velas completas` : ''}${backtest.required_training_observations !== undefined ? `; se requieren ${Number(backtest.required_training_observations).toLocaleString('es-ES')} para entrenar y ${Number(backtest.required_observations || 0).toLocaleString('es-ES')} en total` : ''}.`
           : '';
         if (breakdownElement) breakdownElement.textContent = '';
       }
@@ -317,6 +354,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function updateSystemMode(mode, captureStatus, detectorConfig) {
     if (elInferenceMode && mode) {
+      if (probabilityMode !== mode) {
+        probabilityMode = mode;
+        resetProbabilityHistory();
+        loadProbabilityHistory(mode);
+      }
       const isModel = mode === 'model';
       elInferenceMode.textContent = isModel ? '⚡ MODO: MODELO (HMM-4)' : '⚙️ MODO: HEURÍSTICO';
       elInferenceMode.title = `Click para alternar a modo ${isModel ? 'Heurístico' : 'Modelo HMM'}`;
@@ -387,11 +429,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 1. Algo Institucional
     elProbAlgo.textContent = `${probs.algo_institutional}%`;
-    elBarAlgo.style.width = `${probs.algo_institutional}%`;
 
     // 2. Iceberg
     elProbIceberg.textContent = `${probs.iceberg}%`;
-    elBarIceberg.style.width = `${probs.iceberg}%`;
     if (probs.iceberg_side) {
       elDescIceberg.textContent = `Iceberg ${probs.iceberg_side} activo en nivel modal`;
     } else {
@@ -400,7 +440,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 3. Absorción
     elProbAbsorption.textContent = `${probs.absorption}%`;
-    elBarAbsorption.style.width = `${probs.absorption}%`;
     if (probs.absorption_side) {
       elDescAbsorption.textContent = probs.absorption_side;
     } else {
@@ -409,11 +448,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 4. Retail
     elProbRetail.textContent = `${probs.retail}%`;
-    elBarRetail.style.width = `${probs.retail}%`;
 
     // 5. HFT
     elProbHft.textContent = `${probs.hft_competition}%`;
-    elBarHft.style.width = `${probs.hft_competition}%`;
+    if (addProbabilitySample(probs, Number(probs.timestamp_ms) || Date.now())) {
+      renderProbabilitySparklines();
+    }
 
     // Actualizar notas en vivo
     if (probs.notes && probs.notes.length > 0) {
@@ -429,41 +469,161 @@ document.addEventListener('DOMContentLoaded', () => {
     // Trigger Sonification
     window.audioEngine.playTradeSound(trade, trade.patterns || []);
 
-    // Create row in visual tape
+    const isWhale = trade.usd_value >= 100000;
+    appendTradeToTape(trade, elTapeList, isWhale, MAX_TAPE_ROWS);
+    if (isWhale && elWhaleTapeList) {
+      const emptyMessage = elWhaleTapeList.querySelector('.tape-empty');
+      if (emptyMessage) emptyMessage.remove();
+      appendTradeToTape(trade, elWhaleTapeList, true, MAX_WHALE_ROWS);
+      whaleQueueSize = Math.min(whaleQueueSize + 1, MAX_WHALE_ROWS);
+      updateWhaleQueueCount();
+    }
+  }
+
+  function appendTradeToTape(trade, list, isWhale, maxRows) {
+    if (!list) return;
     const isBuy = trade.side === 'BUY';
     const row = document.createElement('div');
-    const isWhale = trade.usd_value >= 100000;
-
     row.className = `tape-row ${isBuy ? 'buy' : 'sell'} ${isWhale ? 'whale' : ''}`;
 
     const date = new Date(trade.timestamp_ms);
     const timeStr = date.toTimeString().split(' ')[0] + '.' + String(date.getMilliseconds()).padStart(3, '0').slice(0, 2);
+    const exchange = trade.exchange || '';
+    const exchShort = exchange.includes('Binance') ? 'BN' : exchange.includes('Bybit') ? 'BYB' : '--';
+    const cells = [
+      timeStr,
+      exchShort,
+      `$${Number(trade.price).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`,
+      `${Number(trade.size).toFixed(3)} BTC`,
+      `$${Math.round(Number(trade.usd_value)).toLocaleString('en-US')}`,
+    ];
+    cells.forEach((value) => {
+      const cell = document.createElement('span');
+      cell.textContent = value;
+      row.appendChild(cell);
+    });
 
-    let patternBadge = '';
-    if (trade.patterns && trade.patterns.length > 0) {
-      const p = trade.patterns[0];
-      const tagClass = p.includes('ALGO') ? 'tag-algo' :
-                       p.includes('ICEBERG') ? 'tag-iceberg' :
-                       p.includes('ABSORPTION') ? 'tag-absorption' : 'tag-hft';
-      patternBadge = `<span class="badge-tag ${tagClass}">${p}</span>`;
+    const patternCell = document.createElement('span');
+    const pattern = trade.patterns && trade.patterns.length ? trade.patterns[0] : trade.side;
+    patternCell.textContent = pattern;
+    patternCell.title = pattern;
+    row.appendChild(patternCell);
+
+    list.insertBefore(row, list.firstChild);
+    while (list.children.length > maxRows) {
+      list.removeChild(list.lastChild);
     }
+  }
 
-    const exchShort = trade.exchange ? (trade.exchange.includes('Binance') ? 'BN' : 'BYB') : '--';
+  function updateWhaleQueueCount() {
+    if (elWhaleQueueCount) {
+      elWhaleQueueCount.textContent = `${whaleQueueSize} / ${MAX_WHALE_ROWS}`;
+    }
+  }
 
-    row.innerHTML = `
-      <span>${timeStr}</span>
-      <span style="font-size:0.75rem; color:#8b949e;">${exchShort}</span>
-      <span>$${trade.price.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
-      <span>${trade.size.toFixed(3)} BTC</span>
-      <span>$${Math.round(trade.usd_value).toLocaleString('en-US')}</span>
-      <span>${patternBadge || trade.side}</span>
-    `;
+  function resetProbabilityHistory() {
+    Object.values(probabilityHistory).forEach((samples) => samples.splice(0));
+    lastProbabilitySampleBucket = -1;
+    renderProbabilitySparklines();
+  }
 
-    elTapeList.insertBefore(row, elTapeList.firstChild);
+  function addProbabilitySample(probabilities, timestamp) {
+    const bucket = Math.floor(timestamp / PROBABILITY_SAMPLE_MS);
+    if (bucket === lastProbabilitySampleBucket) return false;
+    lastProbabilitySampleBucket = bucket;
 
-    // Limit DOM count for smooth 60fps rendering
-    while (elTapeList.children.length > MAX_TAPE_ROWS) {
-      elTapeList.removeChild(elTapeList.lastChild);
+    Object.keys(PROBABILITY_SERIES).forEach((key) => {
+      const value = Number(probabilities[key]);
+      if (!Number.isFinite(value)) return;
+      const samples = probabilityHistory[key];
+      samples.push({ timestamp, value: Math.max(0, Math.min(100, value)) });
+      while (
+        samples.length
+        && (timestamp - samples[0].timestamp > PROBABILITY_WINDOW_MS
+          || samples.length > PROBABILITY_WINDOW_MS / PROBABILITY_SAMPLE_MS)
+      ) {
+        samples.shift();
+      }
+    });
+    return true;
+  }
+
+  function renderProbabilitySparklines(now = Date.now()) {
+    const start = now - PROBABILITY_WINDOW_MS;
+    Object.entries(PROBABILITY_SERIES).forEach(([key, elements]) => {
+      if (!elements.path) return;
+      const samples = probabilityHistory[key].filter((sample) => sample.timestamp >= start);
+      const segments = [];
+      let segment = [];
+      let previousTimestamp = null;
+      let lastPoint = null;
+      samples.forEach((sample) => {
+        if (
+          previousTimestamp !== null
+          && sample.timestamp - previousTimestamp > PROBABILITY_SAMPLE_MS * 2
+        ) {
+          if (segment.length) segments.push(segment);
+          segment = [];
+        }
+        const x = Math.max(0, Math.min(240, ((sample.timestamp - start) / PROBABILITY_WINDOW_MS) * 240));
+        const y = 40 - (sample.value / 100) * 36;
+        segment.push(`${segment.length ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`);
+        lastPoint = { x, y };
+        previousTimestamp = sample.timestamp;
+      });
+      if (segment.length) segments.push(segment);
+      elements.path.setAttribute('d', segments.map((points) => points.join(' ')).join(' '));
+      if (elements.dot) {
+        elements.dot.style.display = lastPoint ? '' : 'none';
+        if (lastPoint) {
+          elements.dot.setAttribute('cx', lastPoint.x.toFixed(1));
+          elements.dot.setAttribute('cy', lastPoint.y.toFixed(1));
+        }
+      }
+    });
+  }
+
+  async function loadProbabilityHistory(mode) {
+    const requestId = ++historyRequestId;
+    try {
+      const response = await fetch(`/api/classification-history?mode=${encodeURIComponent(mode)}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || `Error HTTP ${response.status}`);
+      if (requestId !== historyRequestId || data.mode !== probabilityMode) return;
+
+      const buckets = new Map();
+      (data.samples || []).forEach((sample) => {
+        const timestamp = Number(sample.timestamp_ms);
+        if (!Number.isFinite(timestamp)) return;
+        const bucket = Math.floor(timestamp / PROBABILITY_SAMPLE_MS) * PROBABILITY_SAMPLE_MS;
+        const existing = buckets.get(bucket) || {};
+        Object.entries(sample.values || {}).forEach(([key, value]) => {
+          if (Object.prototype.hasOwnProperty.call(probabilityHistory, key)) {
+            existing[key] = Number(value);
+          }
+        });
+        buckets.set(bucket, existing);
+      });
+
+      resetProbabilityHistory();
+      [...buckets.entries()].sort(([left], [right]) => left - right).forEach(([timestamp, values]) => {
+        Object.keys(PROBABILITY_SERIES).forEach((key) => {
+          const value = values[key];
+          if (Number.isFinite(value)) {
+            probabilityHistory[key].push({
+              timestamp,
+              value: Math.max(0, Math.min(100, value)),
+            });
+          }
+        });
+      });
+      const timestamps = [...buckets.keys()];
+      if (timestamps.length) {
+        lastProbabilitySampleBucket = Math.floor(Math.max(...timestamps) / PROBABILITY_SAMPLE_MS);
+      }
+      renderProbabilitySparklines();
+    } catch (error) {
+      console.error('Error cargando el historial de clasificación:', error);
     }
   }
 

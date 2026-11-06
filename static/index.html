@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OrderFlowAI - Panel de Microestructura & Sonificación</title>
-  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/style.css?v=20261106-1">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
 </head>
 <body>
@@ -88,13 +88,16 @@
           <div class="prob-header">
             <div>
               <div class="prob-name">Ejecución Algorítmica Institucional</div>
-              <div class="prob-desc">Eventos regulares, equidistantes y uniformes (TWAP/VWAP)</div>
+              <div class="prob-desc">Regularidad de ejecución</div>
             </div>
             <div class="prob-percent" id="prob-algo">--%</div>
           </div>
-          <div class="progress-track">
-            <div class="progress-bar" id="bar-algo" style="width: 0%;"></div>
-          </div>
+          <svg class="prob-sparkline" viewBox="0 0 240 44" role="img" aria-label="Historial de ejecución algorítmica en la última hora">
+            <path class="sparkline-grid" d="M0 11H240 M0 22H240 M0 33H240"></path>
+            <path class="sparkline-line" id="spark-algo"></path>
+            <circle class="sparkline-dot" id="spark-dot-algo" r="2"></circle>
+          </svg>
+          <span class="sparkline-period">Última hora</span>
         </div>
 
         <!-- 2. Iceberg -->
@@ -102,13 +105,16 @@
           <div class="prob-header">
             <div>
               <div class="prob-name">Iceberg Detectado</div>
-              <div class="prob-desc" id="desc-iceberg">Volumen masivo concentrado en un único nivel de precio</div>
+              <div class="prob-desc" id="desc-iceberg">Concentración en nivel</div>
             </div>
             <div class="prob-percent" id="prob-iceberg">--%</div>
           </div>
-          <div class="progress-track">
-            <div class="progress-bar" id="bar-iceberg" style="width: 0%;"></div>
-          </div>
+          <svg class="prob-sparkline" viewBox="0 0 240 44" role="img" aria-label="Historial de iceberg en la última hora">
+            <path class="sparkline-grid" d="M0 11H240 M0 22H240 M0 33H240"></path>
+            <path class="sparkline-line" id="spark-iceberg"></path>
+            <circle class="sparkline-dot" id="spark-dot-iceberg" r="2"></circle>
+          </svg>
+          <span class="sparkline-period">Última hora</span>
         </div>
 
         <!-- 3. Absorption -->
@@ -120,9 +126,12 @@
             </div>
             <div class="prob-percent" id="prob-absorption">--%</div>
           </div>
-          <div class="progress-track">
-            <div class="progress-bar" id="bar-absorption" style="width: 0%;"></div>
-          </div>
+          <svg class="prob-sparkline" viewBox="0 0 240 44" role="img" aria-label="Historial de absorción en la última hora">
+            <path class="sparkline-grid" d="M0 11H240 M0 22H240 M0 33H240"></path>
+            <path class="sparkline-line" id="spark-absorption"></path>
+            <circle class="sparkline-dot" id="spark-dot-absorption" r="2"></circle>
+          </svg>
+          <span class="sparkline-period">Última hora</span>
         </div>
 
         <!-- 4. Retail -->
@@ -134,9 +143,12 @@
             </div>
             <div class="prob-percent" id="prob-retail">--%</div>
           </div>
-          <div class="progress-track">
-            <div class="progress-bar" id="bar-retail" style="width: 0%;"></div>
-          </div>
+          <svg class="prob-sparkline" viewBox="0 0 240 44" role="img" aria-label="Historial de actividad minorista en la última hora">
+            <path class="sparkline-grid" d="M0 11H240 M0 22H240 M0 33H240"></path>
+            <path class="sparkline-line" id="spark-retail"></path>
+            <circle class="sparkline-dot" id="spark-dot-retail" r="2"></circle>
+          </svg>
+          <span class="sparkline-period">Última hora</span>
         </div>
 
         <!-- 5. HFT Competition -->
@@ -148,9 +160,12 @@
             </div>
             <div class="prob-percent" id="prob-hft">--%</div>
           </div>
-          <div class="progress-track">
-            <div class="progress-bar" id="bar-hft" style="width: 0%;"></div>
-          </div>
+          <svg class="prob-sparkline" viewBox="0 0 240 44" role="img" aria-label="Historial de actividad rápida en la última hora">
+            <path class="sparkline-grid" d="M0 11H240 M0 22H240 M0 33H240"></path>
+            <path class="sparkline-line" id="spark-hft"></path>
+            <circle class="sparkline-dot" id="spark-dot-hft" r="2"></circle>
+          </svg>
+          <span class="sparkline-period">Última hora</span>
         </div>
       </div>
 
@@ -162,22 +177,48 @@
 
     <!-- Right Column: Live Aggregated Tape -->
     <section class="card">
-      <div class="card-title">
-        <span>Cinta de Transacciones Significativas</span>
-        <span style="font-size:0.75rem; color:var(--text-muted);" id="feed-stats">BINANCE + BYBIT</span>
-      </div>
-
-      <div class="tape-container">
-        <div class="tape-header">
-          <span>Hora</span>
-          <span>Exchange</span>
-          <span>Precio</span>
-          <span>Tamaño</span>
-          <span>Valor USD</span>
-          <span>Patrón</span>
+        <div class="card-title">
+          <span>Cinta de Transacciones Significativas</span>
+          <span style="font-size:0.75rem; color:var(--text-muted);" id="feed-stats">BINANCE + BYBIT</span>
         </div>
-        <div class="tape-list" id="tape-list">
-          <!-- Dynamic Trades -->
+
+        <div class="tape-columns">
+          <section class="tape-panel" aria-labelledby="live-tape-title">
+            <h3 class="tape-panel-title" id="live-tape-title">Transacciones en vivo</h3>
+            <div class="tape-container">
+              <div class="tape-header">
+                <span>Hora</span>
+                <span>Exch.</span>
+                <span>Precio</span>
+                <span>Tamaño</span>
+                <span>Valor USD</span>
+                <span>Patrón</span>
+              </div>
+              <div class="tape-list" id="tape-list"></div>
+            </div>
+          </section>
+          <section class="tape-panel whale-panel" aria-labelledby="whale-tape-title">
+            <div class="tape-panel-heading">
+              <h3 class="tape-panel-title" id="whale-tape-title">Cola ≥ $100k</h3>
+              <div class="whale-queue-tools">
+                <span id="whale-queue-count" class="whale-queue-count">0 / 120</span>
+                <button id="clear-whale-queue" class="clear-queue-button" type="button">Limpiar</button>
+              </div>
+            </div>
+            <div class="tape-container">
+              <div class="tape-header">
+                <span>Hora</span>
+                <span>Exch.</span>
+                <span>Precio</span>
+                <span>Tamaño</span>
+                <span>Valor USD</span>
+                <span>Patrón</span>
+              </div>
+              <div class="tape-list" id="whale-tape-list" aria-live="polite">
+                <p class="tape-empty">Las transacciones ≥ $100k aparecerán aquí.</p>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
     </section>
@@ -210,7 +251,7 @@
         <option value="inverse">Invertida (LONG ↔ SHORT)</option>
       </select>
     </div>
-    <p class="scalp-method-note">Fourier usa dos ciclos cortos, anomalía residual y ruptura; volumen+tendencia usa un spike de volumen, EMA de BTC y desequilibrio de flujo. Son proxies de investigación: no confirman manipulación, identidad whale ni contexto SP500/VIX.</p>
+    <p class="scalp-method-note">Fourier usa dos ciclos cortos, anomalía residual y ruptura; HMM-4 estima regímenes por separado y no detecta armónicos. Volumen+tendencia usa un spike de volumen, EMA de BTC y desequilibrio de flujo. Son proxies de investigación: no confirman manipulación, identidad whale ni contexto SP500/VIX.</p>
     <p id="scalp-data-status" class="data-capture-status">Consultando histórico de Bybit Linear...</p>
     <div class="scalp-results">
       <div>
@@ -255,6 +296,6 @@
   </dialog>
 
   <script src="/static/js/audio.js"></script>
-  <script src="/static/js/app.js"></script>
+  <script src="/static/js/app.js?v=20261106-1"></script>
 </body>
 </html>

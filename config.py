@@ -82,6 +82,8 @@ class ScalpingConfig:
     min_training_observations: int = 36000
     min_validation_trades: int = 10
     signal_persistence_seconds: int = 3
+    max_snapshot_gap_seconds: float = 5.0
+    minimum_snapshot_coverage: float = 0.80
 
 
 @dataclass

@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CryptoraPRO Chart — OrderFlowAI</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📊</text></svg>">
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    :root {
+      --bg: #0a0e14;
+      --card: #121820;
+      --border: #232d3d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --cyan: #00e5ff;
+      --green: #00e676;
+      --red: #ff1744;
+      --gold: #ffb700;
+      --purple: #c084fc;
+      --orange: #ff9100;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace, sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ---- Header ---- */
+    .chart-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 18px;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .logo-badge {
+      background: linear-gradient(135deg, #00e5ff, #bd00ff);
+      color: #000;
+      font-weight: 900;
+      font-size: 0.8rem;
+      padding: 3px 8px;
+      border-radius: 5px;
+    }
+
+    .chart-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--cyan);
+    }
+
+    .back-link {
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-decoration: none;
+      border: 1px solid var(--border);
+      padding: 3px 8px;
+      border-radius: 4px;
+      transition: color 0.15s;
+    }
+    .back-link:hover { color: var(--cyan); border-color: var(--cyan); }
+
+    /* ---- Controls toolbar ---- */
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .ctrl-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 8px;
+      background: rgba(255,255,255,0.03);
+    }
+
+    .ctrl-label {
+      font-size: 0.65rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+    }
+
+    .ctrl-select, .ctrl-input {
+      background: transparent;
+      color: var(--text);
+      border: none;
+      font-size: 0.8rem;
+      font-family: inherit;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .ctrl-select option { background: #1a2232; }
+
+    .ctrl-btn {
+      background: var(--cyan);
+      color: #000;
+      border: none;
+      border-radius: 4px;
+      padding: 5px 14px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+      white-space: nowrap;
+    }
+    .ctrl-btn:hover { opacity: 0.85; }
+    .ctrl-btn:active { transform: scale(0.97); }
+    .ctrl-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ---- Status bar ---- */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 18px;
+      background: rgba(0,0,0,0.3);
+      border-bottom: 1px solid var(--border);
+      font-size: 0.7rem;
+      color: var(--muted);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+    .status-dot.loading { background: var(--gold); animation: blink 0.8s infinite; }
+    .status-dot.error   { background: var(--red); }
+
+    @keyframes blink {
+      50% { opacity: 0.3; }
+    }
+
+    .signal-pill {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 0.68rem;
+    }
+    .signal-long  { background: rgba(0,230,118,0.2);  color: var(--green); border: 1px solid rgba(0,230,118,0.4); }
+    .signal-short { background: rgba(255,23,68,0.15); color: var(--red);   border: 1px solid rgba(255,23,68,0.3); }
+    .signal-accum { background: rgba(0,230,118,0.1);  color: var(--green); }
+    .signal-dist  { background: rgba(255,23,68,0.1);  color: var(--red); }
+
+    /* ---- Charts area ---- */
+    .charts-container {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+
+    #price-chart {
+      flex: 2.5;
+      min-height: 0;
+      position: relative;
+    }
+
+    .chart-divider {
+      height: 4px;
+      background: var(--border);
+      cursor: ns-resize;
+      flex-shrink: 0;
+    }
+
+    #indicator-chart {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+    }
+
+    /* Legend overlays */
+    .chart-legend {
+      position: absolute;
+      top: 8px;
+      left: 12px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      pointer-events: none;
+    }
+
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.65rem;
+      background: rgba(10,14,20,0.75);
+      padding: 2px 6px;
+      border-radius: 4px;
+      backdrop-filter: blur(4px);
+    }
+
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+
+    .legend-val {
+      font-family: "SF Mono", Consolas, monospace;
+      color: var(--text);
+    }
+
+    /* ---- Loading overlay ---- */
+    .loading-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(10,14,20,0.9);
+      z-index: 20;
+      gap: 12px;
+      transition: opacity 0.3s;
+    }
+
+    .loading-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid var(--border);
+      border-top-color: var(--cyan);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .loading-text {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+
+<!-- ============================================================ HEADER -->
+<header class="chart-header">
+  <div class="header-left">
+    <span class="logo-badge">OF-AI</span>
+    <span class="chart-title">CryptoraPRO</span>
+    <a href="/" class="back-link">← Terminal</a>
+  </div>
+
+  <div class="controls">
+    <!-- Symbol -->
+    <div class="ctrl-group">
+      <span class="ctrl-label">Symbol</span>
+      <select class="ctrl-select" id="ctrl-symbol">
+        <option value="BTCUSDT">BTC/USDT</option>
+        <option value="ETHUSDT">ETH/USDT</option>
+        <option value="SOLUSDT">SOL/USDT</option>
+        <option value="BNBUSDT">BNB/USDT</option>
+        <option value="XRPUSDT">XRP/USDT</option>
+      </select>
+    </div>
+
+    <!-- Interval -->
+    <div class="ctrl-group">
+      <span class="ctrl-label">Intervalo</span>
+      <select class="ctrl-select" id="ctrl-interval">
+        <option value="5m">5m</option>
+        <option value="15m">15m</option>
+        <option value="30m">30m</option>
+        <option value="1h" selected>1h</option>
+        <option value="4h">4h</option>
+        <option value="1d">1d</option>
+      </select>
+    </div>
+
+    <!-- Bars -->
+    <div class="ctrl-group">
+      <span class="ctrl-label">Barras</span>
+      <select class="ctrl-select" id="ctrl-limit">
+        <option value="500">500</option>
+        <option value="1000">1000</option>
+        <option value="1500" selected>1500</option>
+      </select>
+    </div>
+
+    <!-- Fourier cycles -->
+    <div class="ctrl-group">
+      <span class="ctrl-label">C1 días</span>
+      <input class="ctrl-input" id="ctrl-c1" type="number" value="20" min="1" max="365" style="width:46px">
+    </div>
+    <div class="ctrl-group">
+      <span class="ctrl-label">C2 días</span>
+      <input class="ctrl-input" id="ctrl-c2" type="number" value="60" min="1" max="1000" style="width:46px">
+    </div>
+
+    <button class="ctrl-btn" id="btn-load">⚡ Cargar</button>
+  </div>
+</header>
+
+<!-- ============================================================ STATUS BAR -->
+<div class="status-bar">
+  <div class="status-pill">
+    <div class="status-dot loading" id="status-dot"></div>
+    <span id="status-text">Iniciando...</span>
+  </div>
+
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+    <span id="price-display" style="font-size:0.85rem;font-weight:700;color:var(--text);font-family:monospace;">--</span>
+    <span id="signal-display"></span>
+    <span id="state-display" style="color:var(--muted);">Estado: --</span>
+    <span id="mfi-display" style="color:var(--purple);">MFI: --</span>
+    <span id="share-display" style="color:var(--cyan);">C1: -- | C2: --</span>
+  </div>
+
+  <div style="display:flex;gap:6px;align-items:center;">
+    <span id="last-update" style="color:var(--muted);">--</span>
+    <span style="color:var(--border);">|</span>
+    <span style="color:var(--muted);">CryptoraPRO v1.0</span>
+  </div>
+</div>
+
+<!-- ============================================================ CHARTS AREA -->
+<div class="charts-container">
+
+  <!-- Price chart -->
+  <div id="price-chart">
+    <div class="chart-legend" id="price-legend">
+      <div class="legend-row">
+        <div class="legend-dot" style="background:#00e676"></div>
+        <span style="color:var(--muted)">Accum Zone</span>
+        <div class="legend-dot" style="background:#ff1744"></div>
+        <span style="color:var(--muted)">Distrib Zone</span>
+        <div class="legend-dot" style="background:#00e5ff"></div>
+        <span style="color:var(--muted)">Trigger Line</span>
+      </div>
+    </div>
+    <div class="loading-overlay" id="loading-price">
+      <div class="spinner"></div>
+      <div class="loading-text" id="loading-label">Cargando datos de Binance...</div>
+    </div>
+  </div>
+
+  <div class="chart-divider" id="divider"></div>
+
+  <!-- Indicator panel (overlay=false equivalent) -->
+  <div id="indicator-chart">
+    <div class="chart-legend" id="ind-legend">
+      <div class="legend-row">
+        <div class="legend-dot" style="background:#00e5ff"></div>
+        <span style="color:var(--muted)">Fourier C1 (%)</span>
+        <div class="legend-dot" style="background:#ff9100"></div>
+        <span style="color:var(--muted)">Fourier C2 (%)</span>
+        <div class="legend-dot" style="background:#c084fc"></div>
+        <span style="color:var(--muted)">MFI</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// CryptoraPRO Chart — OrderFlowAI
+// Uses lightweight-charts (TradingView open-source MIT library)
+// ============================================================
+
+const API_BASE = '';  // Same origin
+
+// --- DOM references
+const btnLoad       = document.getElementById('btn-load');
+const ctrlSymbol    = document.getElementById('ctrl-symbol');
+const ctrlInterval  = document.getElementById('ctrl-interval');
+const ctrlLimit     = document.getElementById('ctrl-limit');
+const ctrlC1        = document.getElementById('ctrl-c1');
+const ctrlC2        = document.getElementById('ctrl-c2');
+const statusDot     = document.getElementById('status-dot');
+const statusText    = document.getElementById('status-text');
+const priceDisplay  = document.getElementById('price-display');
+const signalDisplay = document.getElementById('signal-display');
+const stateDisplay  = document.getElementById('state-display');
+const mfiDisplay    = document.getElementById('mfi-display');
+const shareDisplay  = document.getElementById('share-display');
+const lastUpdate    = document.getElementById('last-update');
+const loadingPrice  = document.getElementById('loading-price');
+const loadingLabel  = document.getElementById('loading-label');
+
+// ============================================================
+// CHART SETUP: lightweight-charts v4 API
+// ============================================================
+
+const CHART_OPTS = {
+  layout: {
+    background: { color: '#0a0e14' },
+    textColor: '#8b949e',
+  },
+  grid: {
+    vertLines: { color: 'rgba(35,45,61,0.6)' },
+    horzLines: { color: 'rgba(35,45,61,0.6)' },
+  },
+  crosshair: {
+    mode: 1, // CrosshairMode.Magnet
+    vertLine: { color: '#00e5ff', width: 1, style: 2 },
+    horzLine: { color: '#00e5ff', width: 1, style: 2 },
+  },
+  rightPriceScale: { borderColor: '#232d3d' },
+  timeScale: { borderColor: '#232d3d', timeVisible: true, secondsVisible: false },
+  handleScroll: true,
+  handleScale: true,
+};
+
+// Price chart
+const priceChartEl = document.getElementById('price-chart');
+const priceChart = LightweightCharts.createChart(priceChartEl, {
+  ...CHART_OPTS,
+  width: priceChartEl.clientWidth,
+  height: priceChartEl.clientHeight,
+});
+const candleSeries = priceChart.addCandlestickSeries({
+  upColor:   '#00e676',
+  downColor: '#ff1744',
+  borderUpColor:   '#00e676',
+  borderDownColor: '#ff1744',
+  wickUpColor:   '#00e676',
+  wickDownColor: '#ff1744',
+});
+const volumeSeries = priceChart.addHistogramSeries({
+  color: 'rgba(0,229,255,0.15)',
+  priceFormat: { type: 'volume' },
+  priceScaleId: 'vol',
+});
+priceChart.priceScale('vol').applyOptions({
+  scaleMargins: { top: 0.85, bottom: 0 },
+});
+
+// Indicator chart (separate panel)
+const indChartEl = document.getElementById('indicator-chart');
+const indChart = LightweightCharts.createChart(indChartEl, {
+  ...CHART_OPTS,
+  width: indChartEl.clientWidth,
+  height: indChartEl.clientHeight,
+  rightPriceScale: {
+    borderColor: '#232d3d',
+    scaleMargins: { top: 0.05, bottom: 0.05 },
+  },
+});
+
+// Fourier lines (0-100 scale)
+const share1Line = indChart.addLineSeries({
+  color: '#00e5ff',
+  lineWidth: 2,
+  title: 'C1 (%)',
+});
+const share2Line = indChart.addLineSeries({
+  color: '#ff9100',
+  lineWidth: 1,
+  title: 'C2 (%)',
+});
+// MFI line
+const mfiLine = indChart.addLineSeries({
+  color: '#c084fc',
+  lineWidth: 1,
+  title: 'MFI',
+});
+// MFI overbought/oversold zones
+const mfiObLine = indChart.addLineSeries({
+  color: 'rgba(255,23,68,0.3)',
+  lineWidth: 1,
+  lineStyle: 2,
+});
+const mfiOsLine = indChart.addLineSeries({
+  color: 'rgba(0,230,118,0.3)',
+  lineWidth: 1,
+  lineStyle: 2,
+});
+// 50/50 reference
+const midLine = indChart.addLineSeries({
+  color: 'rgba(139,148,158,0.3)',
+  lineWidth: 1,
+  lineStyle: 2,
+});
+
+// Whale markers — stored as markers on candleSeries
+// Zone background — stored as histogram (accum=green, distrib=red, neutral=transparent)
+const zoneBg = priceChart.addHistogramSeries({
+  priceScaleId: 'zone',
+  color: 'transparent',
+  base: 0,
+});
+priceChart.priceScale('zone').applyOptions({
+  scaleMargins: { top: 0, bottom: 0 },
+  visible: false,
+});
+
+// Trigger lines (last accum high, last distrib low) as line series
+const triggerAccumLine = priceChart.addLineSeries({
+  color: 'rgba(0,230,118,0.65)',
+  lineWidth: 1,
+  lineStyle: 1, // dashed
+  title: '',
+  lastValueVisible: false,
+  priceLineVisible: false,
+});
+const triggerDistribLine = priceChart.addLineSeries({
+  color: 'rgba(255,23,68,0.65)',
+  lineWidth: 1,
+  lineStyle: 1,
+  title: '',
+  lastValueVisible: false,
+  priceLineVisible: false,
+});
+
+// Sync time ranges between price and indicator charts
+priceChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+  if (range) indChart.timeScale().setVisibleLogicalRange(range);
+});
+indChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+  if (range) priceChart.timeScale().setVisibleLogicalRange(range);
+});
+
+// Crosshair sync
+priceChart.subscribeCrosshairMove((param) => {
+  if (!param.time) return;
+  indChart.setCrosshairPosition(param.seriesData.get(candleSeries)?.close ?? 0, param.time, share1Line);
+});
+indChart.subscribeCrosshairMove((param) => {
+  if (!param.time) return;
+  const v = param.seriesData.get(share1Line);
+  priceChart.setCrosshairPosition(v ?? 0, param.time, candleSeries);
+});
+
+// ============================================================
+// RESIZE HANDLER
+// ============================================================
+function resizeCharts() {
+  priceChart.applyOptions({ width: priceChartEl.clientWidth, height: priceChartEl.clientHeight });
+  indChart.applyOptions({ width: indChartEl.clientWidth, height: indChartEl.clientHeight });
+}
+window.addEventListener('resize', resizeCharts);
+
+// Drag-to-resize divider
+const divider = document.getElementById('divider');
+let isDragging = false;
+let startY = 0;
+let startTop = 0;
+
+divider.addEventListener('mousedown', (e) => {
+  isDragging = true;
+  startY = e.clientY;
+  document.body.style.cursor = 'ns-resize';
+  document.body.style.userSelect = 'none';
+});
+document.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  const delta = e.clientY - startY;
+  const container = document.querySelector('.charts-container');
+  const totalH = container.clientHeight - 4; // minus divider
+  const newTopPct = Math.max(0.25, Math.min(0.75,
+    (priceChartEl.clientHeight + delta) / totalH
+  ));
+  priceChartEl.style.flex = `${newTopPct * 100}`;
+  indChartEl.style.flex = `${(1 - newTopPct) * 100}`;
+  startY = e.clientY;
+  resizeCharts();
+});
+document.addEventListener('mouseup', () => {
+  if (isDragging) {
+    isDragging = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }
+});
+
+// ============================================================
+// STATUS HELPERS
+// ============================================================
+
+function setStatus(text, type = 'ok') {
+  statusText.textContent = text;
+  statusDot.className = 'status-dot' + (type === 'loading' ? ' loading' : type === 'error' ? ' error' : '');
+}
+
+function setLoading(text) {
+  loadingLabel.textContent = text;
+  loadingPrice.classList.remove('hidden');
+  btnLoad.disabled = true;
+  setStatus(text, 'loading');
+}
+
+function hideLoading() {
+  loadingPrice.classList.add('hidden');
+  btnLoad.disabled = false;
+  setStatus('Datos cargados', 'ok');
+}
+
+// ============================================================
+// BACKGROUND COLOR SYSTEM (state/A&D zones)
+// ============================================================
+
+// We use the background option on the price chart to show A/D zone colors
+// Since lightweight-charts doesn't have bgcolor per-bar, we use a full-opacity
+// histogram at a separate price scale (always visible at top of chart)
+
+// Alternatively, we render zone backgrounds as area series with tiny ranges.
+// A simpler approach: Overlay colored markers on specific bars.
+
+// We'll use the chart background + per-bar marker approach.
+
+// ============================================================
+// ENTRY SIGNAL MARKER HELPERS
+// ============================================================
+
+function buildMarkers(indicators) {
+  const markers = [];
+  for (const bar of indicators) {
+    if (bar.whale_buy) {
+      markers.push({
+        time: bar.time,
+        position: 'belowBar',
+        color: '#00C805',
+        shape: 'arrowUp',
+        text: 'W',
+        size: 1,
+      });
+    }
+    if (bar.whale_sell) {
+      markers.push({
+        time: bar.time,
+        position: 'aboveBar',
+        color: '#FF0000',
+        shape: 'arrowDown',
+        text: 'W',
+        size: 1,
+      });
+    }
+    if (bar.long_confirmed) {
+      markers.push({
+        time: bar.time,
+        position: 'belowBar',
+        color: '#00e676',
+        shape: 'arrowUp',
+        text: 'LONG',
+        size: 2,
+      });
+    }
+    if (bar.short_confirmed) {
+      markers.push({
+        time: bar.time,
+        position: 'aboveBar',
+        color: '#ff1744',
+        shape: 'arrowDown',
+        text: 'SHORT',
+        size: 2,
+      });
+    }
+    if (bar.enter_accum_zone) {
+      markers.push({
+        time: bar.time,
+        position: 'belowBar',
+        color: '#00e676',
+        shape: 'circle',
+        text: 'ZL',
+        size: 1,
+      });
+    }
+    if (bar.enter_distrib_zone) {
+      markers.push({
+        time: bar.time,
+        position: 'aboveBar',
+        color: '#ff1744',
+        shape: 'circle',
+        text: 'ZS',
+        size: 1,
+      });
+    }
+    if (bar.dom_switch) {
+      markers.push({
+        time: bar.time,
+        position: 'aboveBar',
+        color: '#ffffff',
+        shape: 'circle',
+        text: '↻',
+        size: 1,
+      });
+    }
+  }
+  // Sort markers by time (required by lightweight-charts)
+  markers.sort((a, b) => a.time - b.time);
+  return markers;
+}
+
+// ============================================================
+// BACKGROUND BANDS (A/D zone coloring)
+// Using a background series trick: price line at 0 colored by state
+// We use the chart backgroundColor per segment using an area series overlay.
+// ============================================================
+
+// We store the AD background as colored area series on a separate price scale
+let adBgSeries = null;
+
+function renderADBg(priceChart, indicators, klines) {
+  if (adBgSeries) {
+    try { priceChart.removeSeries(adBgSeries); } catch (e) {}
+    adBgSeries = null;
+  }
+
+  // Build a histogram where value encodes the zone type
+  // We'll overlay it using a secondary price scale with the bar's high as a full-height fill
+  // Lightweight-charts doesn't have per-bar bgcolor, so we approximate with thin colored area
+
+  // Instead, use colored volume histogram on a hidden scale as a visual band
+  adBgSeries = priceChart.addHistogramSeries({
+    priceScaleId: 'adbg',
+    base: 0,
+    lastValueVisible: false,
+    priceLineVisible: false,
+  });
+  priceChart.priceScale('adbg').applyOptions({
+    visible: false,
+    scaleMargins: { top: 0, bottom: 0 },
+  });
+
+  const data = indicators.map((bar, i) => {
+    let color = 'transparent';
+    if (bar.is_accum) {
+      color = 'rgba(0,230,118,0.1)';
+    } else if (bar.is_distrib) {
+      color = 'rgba(255,23,68,0.1)';
+    } else {
+      const st = bar.state;
+      if (st === 1) color = 'rgba(0,230,118,0.03)';
+      else if (st === 2) color = 'rgba(255,183,0,0.03)';
+      else color = 'rgba(139,148,158,0.02)';
+    }
+    return { time: bar.time, value: 1, color };
+  });
+
+  adBgSeries.setData(data);
+}
+
+// ============================================================
+// TRIGGER LINES (last accum high / distrib low)
+// ============================================================
+
+function renderTriggerLines(indicators) {
+  const accumHighData = [];
+  const distribLowData = [];
+
+  for (const bar of indicators) {
+    if (bar.last_accum_high != null) {
+      accumHighData.push({ time: bar.time, value: bar.last_accum_high });
+    }
+    if (bar.last_distrib_low != null) {
+      distribLowData.push({ time: bar.time, value: bar.last_distrib_low });
+    }
+  }
+
+  triggerAccumLine.setData(accumHighData);
+  triggerDistribLine.setData(distribLowData);
+}
+
+// ============================================================
+// STATUS BAR UPDATER (last bar)
+// ============================================================
+
+function updateStatusBar(indicators, klines) {
+  if (!indicators.length) return;
+  const last = indicators[indicators.length - 1];
+  const lastK = klines[klines.length - 1];
+
+  priceDisplay.textContent = `$${lastK.close.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const stateNames = { 1: '🟢 TENDENCIA', 2: '🟡 DEBILITANDO', 3: '⚪ TRANSICIÓN' };
+  stateDisplay.textContent = `Estado: ${stateNames[last.state] || '—'}`;
+  mfiDisplay.textContent = `MFI: ${last.mfi.toFixed(1)}`;
+  shareDisplay.textContent = `C1: ${last.share1.toFixed(1)}% | C2: ${last.share2.toFixed(1)}%`;
+  lastUpdate.textContent = new Date().toLocaleTimeString('es-ES');
+
+  // Signal pill
+  let sig = '';
+  if (last.long_confirmed) {
+    sig = `<span class="signal-pill signal-long">▲ LONG CONFIRMADO</span>`;
+  } else if (last.short_confirmed) {
+    sig = `<span class="signal-pill signal-short">▼ SHORT CONFIRMADO</span>`;
+  } else if (last.is_accum) {
+    sig = `<span class="signal-pill signal-accum">● ZONA ACUMULACIÓN</span>`;
+  } else if (last.is_distrib) {
+    sig = `<span class="signal-pill signal-dist">● ZONA DISTRIBUCIÓN</span>`;
+  }
+  signalDisplay.innerHTML = sig;
+}
+
+// ============================================================
+// MAIN LOAD FUNCTION
+// ============================================================
+
+let currentSymbol = 'BTCUSDT';
+let currentInterval = '1h';
+
+async function loadChart() {
+  const symbol   = ctrlSymbol.value;
+  const interval = ctrlInterval.value;
+  const limit    = parseInt(ctrlLimit.value);
+  const c1       = parseFloat(ctrlC1.value) || 20;
+  const c2       = parseFloat(ctrlC2.value) || 60;
+
+  // mins_per_bar from interval
+  const intervalMinsMap = { '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240, '6h': 360, '12h': 720, '1d': 1440 };
+  const minsPerBar = intervalMinsMap[interval] || 60;
+
+  setLoading(`Cargando ${symbol} ${interval} · ${limit} barras...`);
+  currentSymbol = symbol;
+  currentInterval = interval;
+
+  try {
+    const url = new URL('/api/chart/indicators', window.location.origin);
+    url.searchParams.set('symbol', symbol);
+    url.searchParams.set('interval', interval);
+    url.searchParams.set('limit', limit);
+    url.searchParams.set('c1_days', c1);
+    url.searchParams.set('c2_days', c2);
+    url.searchParams.set('mins_per_bar', minsPerBar);
+
+    setStatus('Calculando indicadores...', 'loading');
+    const resp = await fetch(url.toString());
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      throw new Error(err.detail || resp.statusText);
+    }
+
+    const data = await resp.json();
+    const { klines, indicators } = data;
+
+    if (!klines || !klines.length) throw new Error('No se recibieron datos de velas.');
+
+    setStatus('Renderizando gráfico...', 'loading');
+
+    // --- Candles
+    candleSeries.setData(klines.map(k => ({
+      time: k.time,
+      open: k.open,
+      high: k.high,
+      low: k.low,
+      close: k.close,
+    })));
+
+    // --- Volume
+    volumeSeries.setData(klines.map((k, i) => ({
+      time: k.time,
+      value: k.volume,
+      color: k.close >= k.open ? 'rgba(0,230,118,0.2)' : 'rgba(255,23,68,0.15)',
+    })));
+
+    // --- Indicator lines (0-100 scale)
+    const validIndicators = indicators.filter(d => d.share1 != null);
+
+    share1Line.setData(validIndicators.map(d => ({ time: d.time, value: d.share1 })));
+    share2Line.setData(validIndicators.map(d => ({ time: d.time, value: d.share2 })));
+    mfiLine.setData(validIndicators.map(d => ({ time: d.time, value: d.mfi })));
+
+    // Static reference lines (need data extent)
+    if (validIndicators.length) {
+      const tStart = validIndicators[0].time;
+      const tEnd   = validIndicators[validIndicators.length - 1].time;
+      mfiObLine.setData([{ time: tStart, value: 80 }, { time: tEnd, value: 80 }]);
+      mfiOsLine.setData([{ time: tStart, value: 20 }, { time: tEnd, value: 20 }]);
+      midLine.setData([{ time: tStart, value: 50 }, { time: tEnd, value: 50 }]);
+    }
+
+    // --- Markers (whale, entry, zone, switch)
+    const markers = buildMarkers(validIndicators);
+    candleSeries.setMarkers(markers);
+
+    // --- Zone background
+    renderADBg(priceChart, validIndicators, klines);
+
+    // --- Trigger lines
+    renderTriggerLines(validIndicators);
+
+    // --- Status bar
+    updateStatusBar(validIndicators, klines);
+
+    // Fit content
+    priceChart.timeScale().fitContent();
+    indChart.timeScale().fitContent();
+
+    hideLoading();
+    setStatus(`${symbol} ${interval} · ${klines.length} velas · ${validIndicators.filter(d => d.long_confirmed || d.short_confirmed).length} señales`, 'ok');
+
+  } catch (err) {
+    console.error('Chart load error:', err);
+    setStatus(`Error: ${err.message}`, 'error');
+    loadingLabel.textContent = `❌ Error: ${err.message}`;
+    btnLoad.disabled = false;
+  }
+}
+
+// ============================================================
+// CROSSHAIR VALUE DISPLAY
+// ============================================================
+
+priceChart.subscribeCrosshairMove((param) => {
+  if (!param.time) return;
+  const candle = param.seriesData.get(candleSeries);
+  if (candle) {
+    priceDisplay.textContent = `O:${candle.open?.toFixed(2)} H:${candle.high?.toFixed(2)} L:${candle.low?.toFixed(2)} C:${candle.close?.toFixed(2)}`;
+  }
+});
+
+// ============================================================
+// EVENTS
+// ============================================================
+
+btnLoad.addEventListener('click', loadChart);
+
+ctrlInterval.addEventListener('change', () => {
+  // Auto-adjust mins_per_bar when interval changes
+  // No action needed — loadChart reads value directly
+});
+
+// Keyboard shortcut: Enter to reload
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !btnLoad.disabled) loadChart();
+});
+
+// ============================================================
+// INITIAL LOAD
+// ============================================================
+
+window.addEventListener('load', () => {
+  resizeCharts();
+  loadChart();
+});
+
+</script>
+</body>
+</html>

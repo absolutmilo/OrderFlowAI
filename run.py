@@ -6,6 +6,7 @@ Launches the FastAPI backend and opens the live Order Flow & Sonification Dashbo
 import sys
 import os
 import webbrowser
+import time
 import uvicorn
 
 # Ensure project root is in sys.path
@@ -35,7 +36,9 @@ def main():
 
     # Open browser automatically
     try:
-        webbrowser.open(f"http://{CONFIG.server.host}:{CONFIG.server.port}")
+        webbrowser.open(
+            f"http://{CONFIG.server.host}:{CONFIG.server.port}/?v={int(time.time())}"
+        )
     except Exception:
         pass
 

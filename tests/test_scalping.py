@@ -166,6 +166,31 @@ def test_optimizer_requires_minimum_training_observations_after_split():
     assert result["required_observations"] == 51_429
 
 
+def test_optimizer_rejects_snapshot_history_with_insufficient_coverage():
+    timestamps = np.arange(0, 2400, 2, dtype=np.int64) * 1000
+    count = len(timestamps)
+    engine = ScalpingEngine(
+        ":memory:",
+        ScalpingConfig(
+            min_training_observations=800,
+            minimum_snapshot_coverage=0.80,
+        ),
+    )
+    engine._load_observations = lambda: (
+        timestamps,
+        np.full(count, 70_000.0),
+        np.zeros(count),
+        np.zeros(count),
+    )
+
+    result = engine.run_backtest()
+
+    assert result["status"] == "insufficient_data_quality"
+    assert result["snapshot_coverage_pct"] == pytest.approx(50.04, abs=0.02)
+    assert result["maximum_snapshot_gap_seconds"] == 2.0
+    assert engine.parameters is None
+
+
 def test_optimizer_evaluates_full_grid_on_chronological_holdout():
     count = 2400
     timestamps = np.arange(count, dtype=np.int64) * 1000
@@ -226,6 +251,62 @@ def test_aggregated_bars_use_complete_snapshot_ranges():
     assert bars["open"].tolist() == [100.0, 400.0]
     assert bars["close"].tolist() == [399.0, 699.0]
     assert bars["snapshot_indices"].tolist() == [299, 599]
+
+
+def test_aggregated_bars_reject_sparse_or_interrupted_buckets():
+    timestamps = np.concatenate((
+        np.arange(100, dtype=np.int64) * 1000,
+        np.arange(120, 300, dtype=np.int64) * 1000,
+        np.arange(300, 600, dtype=np.int64) * 1000,
+    ))
+    prices = np.arange(len(timestamps), dtype=np.float64) + 100.0
+
+    bars = ScalpingEngine._aggregate_bars(
+        timestamps,
+        prices,
+        np.full(len(timestamps), 0.5),
+        np.full(len(timestamps), 1_000.0),
+        timeframe_minutes=5,
+    )
+
+    assert len(bars["close"]) == 1
+    assert bars["timestamps"][0] == timestamps[-1]
+
+
+def test_simulation_skips_trades_crossing_unobserved_market_gaps():
+    engine = ScalpingEngine(
+        ":memory:",
+        ScalpingConfig(
+            taker_fee_bps_per_side=0.0,
+            slippage_bps_per_side=0.0,
+            max_snapshot_gap_seconds=5.0,
+        ),
+    )
+    timestamps = np.array([0, 1_000, 10_000, 11_000], dtype=np.int64)
+    prices = np.full(4, 100.0)
+    parameters = ScalpParameters(10, 1.0, 1.0, 0.25, 0.0, 1)
+
+    trades = engine._simulate(
+        timestamps,
+        prices,
+        np.full(4, 10.0),
+        [(0, 1)],
+        parameters,
+        start_index=0,
+        end_index=len(timestamps),
+    )
+
+    assert trades == []
+
+
+def test_atr_ignores_price_jumps_across_snapshot_gaps():
+    timestamps = np.array([0, 1_000, 10_000, 11_000], dtype=np.int64)
+    prices = np.array([100.0, 100.0, 110.0, 110.0])
+
+    atr = ScalpingEngine._atr_bps(timestamps, prices, horizon_seconds=60)
+
+    assert atr[2] == pytest.approx(0.25)
+    assert atr[3] == pytest.approx(0.25)
 
 
 def test_whale_trend_strategy_requires_volume_flow_and_trend_confirmation():

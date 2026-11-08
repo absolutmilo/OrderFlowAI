@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from fastapi import HTTPException
 
 from src.api import server
-from src.core.trade_model import ClassificationProbabilities
+from src.core.trade_model import ClassificationProbabilities, OrderFlowMetrics
 
 
 def test_scalping_status_counts_only_the_configured_exchange(tmp_path):
@@ -43,8 +43,43 @@ def test_scalping_status_counts_only_the_configured_exchange(tmp_path):
     assert response.status_code == 200
     assert b'"observations":1' in response.body
     assert b'"hmm_snapshot_count":1' in response.body
+    assert b'"recent_window_hours":24' in response.body
+    assert b'"recent_observations":0' in response.body
+    assert b'"recent_snapshot_coverage_pct":0.0' in response.body
     assert b'"minimum_training_observations":36000' in response.body
     assert b'"minimum_observations":51429' in response.body
+
+
+def test_scalping_status_reports_recent_snapshot_coverage(tmp_path):
+    database_path = tmp_path / "recent-status.sqlite3"
+    now_ms = int(time.time() * 1000)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE market_observations (
+                observed_at_ms INTEGER,
+                symbol TEXT,
+                market_source TEXT,
+                heuristic_scores_json TEXT
+            )
+            """
+        )
+        connection.executemany(
+            "INSERT INTO market_observations VALUES (?, ?, ?, ?)",
+            [
+                (now_ms - 3_000, "BTCUSDT", "Bybit-Linear", "{}"),
+                (now_ms - 2_000, "BTCUSDT", "Bybit-Linear", "{}"),
+                (now_ms - 1_000, "BTCUSDT", "Bybit-Linear", "{}"),
+            ],
+        )
+
+    with patch.object(server, "database_path", database_path):
+        response = asyncio.run(server.get_scalping_status())
+
+    assert response.status_code == 200
+    assert b'"recent_observations":3' in response.body
+    assert b'"recent_snapshot_coverage_pct":100.0' in response.body
+    assert b'"recent_maximum_snapshot_gap_seconds":1.0' in response.body
 
 
 def test_backtest_endpoint_returns_engine_result_and_broadcasts():
@@ -89,6 +124,75 @@ def test_snapshot_scores_preserve_heuristics_and_add_hmm4_posterior():
     assert scores["dominant_regime"] == "RETAIL_DOMINANT"
     assert scores["hmm_4"]["available"] is True
     assert scores["hmm_4"]["dominant_regime"] == "ALGO_INSTITUTIONAL"
+
+
+def test_capture_market_snapshot_requires_a_fresh_bybit_trade():
+    now_ms = int(time.time() * 1000)
+    with patch.object(server, "last_bybit_trade_at_ms", now_ms - 6_000):
+        with patch.object(server, "data_capture_status", "recording"):
+            with patch.object(server.scalp_classifier, "is_warmed_up") as warmed_up:
+                with patch.object(server.market_data_store, "record_observation") as save:
+                    assert server.capture_market_snapshot(now_ms) is False
+            assert server.data_capture_status == "waiting_for_feed"
+
+    warmed_up.assert_not_called()
+    save.assert_not_called()
+
+
+def test_capture_market_snapshot_persists_latest_fresh_state():
+    now_ms = int(time.time() * 1000)
+    metrics = OrderFlowMetrics(
+        current_price=100_000.0,
+        cvd_usd=1_000.0,
+        cvd_btc=0.01,
+        buy_volume_usd=2_000.0,
+        sell_volume_usd=1_000.0,
+        trades_per_second=10.0,
+        volume_per_second_usd=3_000.0,
+        price_delta_bps=1.0,
+        inter_arrival_cv=0.5,
+    )
+    probabilities = ClassificationProbabilities(
+        algo_institutional=10.0,
+        iceberg=20.0,
+        absorption=30.0,
+        retail=40.0,
+        hft_competition=5.0,
+        breakout=6.0,
+        dominant_regime="RETAIL_DOMINANT",
+    )
+    classifier = Mock()
+    classifier.is_warmed_up.return_value = True
+    classifier.get_current_metrics.return_value = metrics
+    classifier.classify.return_value = probabilities
+    classifier.hmm_model = None
+
+    with patch.object(server, "last_bybit_trade_at_ms", now_ms):
+        with patch.object(server, "last_capture_at_ms", 0):
+            with patch.object(server, "data_capture_status", "starting"):
+                with patch.object(server, "scalp_classifier", classifier):
+                    with patch.object(server, "market_data_store") as store:
+                        with patch.object(server, "scalping_engine") as engine:
+                            assert server.capture_market_snapshot(now_ms) is True
+                            assert server.last_capture_at_ms == now_ms
+                            assert server.data_capture_status == "recording"
+
+    store.record_observation.assert_called_once()
+    engine.observe.assert_called_once_with(
+        now_ms,
+        metrics.current_price,
+        {
+            "current_price": metrics.current_price,
+            "cvd_usd": metrics.cvd_usd,
+            "cvd_btc": metrics.cvd_btc,
+            "buy_volume_usd": metrics.buy_volume_usd,
+            "sell_volume_usd": metrics.sell_volume_usd,
+            "trades_per_second": metrics.trades_per_second,
+            "volume_per_second_usd": metrics.volume_per_second_usd,
+            "price_delta_bps": metrics.price_delta_bps,
+            "inter_arrival_cv": metrics.inter_arrival_cv,
+        },
+    )
 
 
 def test_classification_history_returns_selected_mode_for_last_hour(tmp_path):

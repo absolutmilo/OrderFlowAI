@@ -190,7 +190,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (dataStatusElement && scalping.observations !== undefined) {
       const required = scalping.minimum_observations || scalping.minimum_training_observations;
       const hmmCount = Number(scalping.hmm_snapshot_count || 0).toLocaleString('es-ES');
-      dataStatusElement.textContent = `Histórico ${scalping.source}: ${Number(scalping.observations).toLocaleString('es-ES')} / ${Number(required).toLocaleString('es-ES')} snapshots (${Number(scalping.minimum_training_observations || required).toLocaleString('es-ES')} para entrenamiento) · ${hmmCount} con estado HMM-4.`;
+      dataStatusElement.textContent = `Histórico ${scalping.source}: ${Number(scalping.observations).toLocaleString('es-ES')} / ${Number(required).toLocaleString('es-ES')} snapshots (${Number(scalping.minimum_training_observations || required).toLocaleString('es-ES')} para entrenamiento) · ${hmmCount} con estado HMM-4 · Últimas 24 h: cobertura ${Number(scalping.recent_snapshot_coverage_pct || 0)}%, ${Number(scalping.recent_observations || 0).toLocaleString('es-ES')} snapshots, hueco máximo ${Number(scalping.recent_maximum_snapshot_gap_seconds || 0)} s.`;
     }
   }
 
@@ -229,7 +229,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       } else {
         metricsElement.textContent = backtest.status === 'insufficient_data_quality'
-          ? `Cobertura ${Number(backtest.snapshot_coverage_pct || 0)}% · hueco máximo ${Number(backtest.maximum_snapshot_gap_seconds || 0)} s. Se requiere captura continua para validar el backtest.`
+          ? `Última validación: cobertura histórica ${Number(backtest.snapshot_coverage_pct || 0)}% · hueco máximo ${Number(backtest.maximum_snapshot_gap_seconds || 0)} s. Se requiere captura continua para validar el backtest.`
           : backtest.observations !== undefined
             ? `${backtest.strategy_name || ''} · ${backtest.timeframe_minutes || ''} min. ${Number(backtest.observations).toLocaleString('es-ES')} observaciones Bybit Linear; ${Number(backtest.training_observations || 0).toLocaleString('es-ES')} snapshots en entrenamiento${backtest.training_bars !== undefined ? `; ${backtest.training_bars}/${backtest.required_training_bars || '?'} velas completas` : ''}${backtest.required_training_observations !== undefined ? `; se requieren ${Number(backtest.required_training_observations).toLocaleString('es-ES')} para entrenar y ${Number(backtest.required_observations || 0).toLocaleString('es-ES')} en total` : ''}.`
           : '';

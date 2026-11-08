@@ -12,7 +12,7 @@ import sqlite3
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Set, List
+from typing import Set, List, Optional
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -56,6 +56,8 @@ connectors: List = []
 trade_counter = 0
 exchange_counts = {"Binance": 0, "Bybit": 0}
 last_capture_at_ms = 0
+last_bybit_trade_at_ms = 0
+snapshot_capture_task: Optional[asyncio.Task] = None
 data_capture_status = "starting"
 
 
@@ -88,64 +90,96 @@ async def broadcast_message(message: dict):
         active_websockets.discard(ws)
 
 
-async def handle_aggregated_trade(agg_trade: AggregatedTrade):
-    """Classify each aggregated event and periodically persist labeled training data."""
+def capture_market_snapshot(now_ms: int) -> bool:
     global last_capture_at_ms, data_capture_status
-    global trade_counter
+
+    if (
+        not last_bybit_trade_at_ms
+        or now_ms - last_bybit_trade_at_ms
+        > CONFIG.scalping.max_snapshot_gap_seconds * 1000
+    ):
+        data_capture_status = "waiting_for_feed"
+        return False
+    if not scalp_classifier.is_warmed_up():
+        data_capture_status = "waiting_for_warmup"
+        return False
+
+    scalp_metrics = scalp_classifier.get_current_metrics()
+    if scalp_metrics is None:
+        data_capture_status = "waiting_for_warmup"
+        return False
+
+    previous_capture_at_ms = last_capture_at_ms
+    if (
+        previous_capture_at_ms
+        and now_ms - previous_capture_at_ms
+        > CONFIG.scalping.max_snapshot_gap_seconds * 1000
+        and scalp_classifier.hmm_model is not None
+    ):
+        scalp_classifier.hmm_model.reset()
+    hmm_probabilities = (
+        scalp_classifier.classify(mode="model")
+        if scalp_classifier.hmm_model is not None
+        else None
+    )
+    scalp_probabilities = scalp_classifier.classify()
+    scalp_features = asdict(scalp_metrics)
+    market_data_store.record_observation(
+        observed_at_ms=now_ms,
+        symbol=CONFIG.scalping.symbol,
+        price=scalp_metrics.current_price,
+        cvd_usd=scalp_metrics.cvd_usd,
+        features=scalp_features,
+        heuristic_scores=snapshot_scores(
+            scalp_probabilities,
+            hmm_probabilities,
+        ),
+        configuration=asdict(CONFIG),
+        market_source=CONFIG.scalping.exchange,
+    )
+    scalping_engine.observe(
+        now_ms,
+        scalp_metrics.current_price,
+        scalp_features,
+    )
+    last_capture_at_ms = now_ms
+    data_capture_status = "recording"
+    return True
+
+
+async def capture_market_data_loop() -> None:
+    global data_capture_status
+    interval_seconds = CONFIG.data_capture.sample_interval_seconds
+    if interval_seconds <= 0:
+        raise ValueError("El intervalo de captura debe ser mayor que cero.")
+
+    while True:
+        await asyncio.sleep(interval_seconds)
+        now_ms = int(time.time() * 1000)
+        if now_ms - last_capture_at_ms < interval_seconds * 1000:
+            continue
+        try:
+            capture_market_snapshot(now_ms)
+        except sqlite3.Error:
+            logger.exception("No se pudo guardar el snapshot Bybit Linear en SQLite.")
+            data_capture_status = "error"
+
+
+async def handle_aggregated_trade(agg_trade: AggregatedTrade):
+    """Classify each aggregated event and refresh the live market state."""
+    global last_bybit_trade_at_ms, trade_counter
     trade_counter += 1
+    now_ms = int(time.time() * 1000)
+    if agg_trade.exchange == CONFIG.scalping.exchange:
+        last_bybit_trade_at_ms = now_ms
 
     # Update classifier
     classifier.add_trade(agg_trade)
     probabilities = classifier.classify()
     metrics = classifier.get_current_metrics()
 
-    now_ms = int(time.time() * 1000)
     if agg_trade.exchange == CONFIG.scalping.exchange:
         scalp_classifier.add_trade(agg_trade)
-        scalp_probabilities = scalp_classifier.classify()
-        scalp_metrics = scalp_classifier.get_current_metrics()
-
-        if (
-            scalp_metrics is not None
-            and scalp_classifier.is_warmed_up()
-            and now_ms - last_capture_at_ms >= CONFIG.data_capture.sample_interval_seconds * 1000
-        ):
-            previous_capture_at_ms = last_capture_at_ms
-            last_capture_at_ms = now_ms
-            try:
-                hmm_probabilities = None
-                if scalp_classifier.hmm_model is not None:
-                    if (
-                        previous_capture_at_ms
-                        and now_ms - previous_capture_at_ms
-                        > CONFIG.scalping.max_snapshot_gap_seconds * 1000
-                    ):
-                        scalp_classifier.hmm_model.reset()
-                    hmm_probabilities = scalp_classifier.classify(mode="model")
-
-                scalp_features = asdict(scalp_metrics)
-                market_data_store.record_observation(
-                    observed_at_ms=now_ms,
-                    symbol=agg_trade.symbol,
-                    price=scalp_metrics.current_price,
-                    cvd_usd=scalp_metrics.cvd_usd,
-                    features=scalp_features,
-                    heuristic_scores=snapshot_scores(
-                        scalp_probabilities,
-                        hmm_probabilities,
-                    ),
-                    configuration=asdict(CONFIG),
-                    market_source=CONFIG.scalping.exchange,
-                )
-                scalping_engine.observe(
-                    now_ms,
-                    scalp_metrics.current_price,
-                    scalp_features,
-                )
-                data_capture_status = "recording"
-            except sqlite3.Error:
-                logger.exception("No se pudo guardar el snapshot Bybit Linear en SQLite.")
-                data_capture_status = "error"
 
     # Pattern tags
     patterns = []
@@ -195,8 +229,10 @@ async def handle_raw_trade(raw_trade: RawTrade):
 @app.on_event("startup")
 async def on_startup():
     global connectors, data_capture_status, last_capture_at_ms
+    global last_bybit_trade_at_ms, snapshot_capture_task
     connectors.clear()
     last_capture_at_ms = 0
+    last_bybit_trade_at_ms = 0
     market_data_store.initialize()
     data_capture_status = "waiting_for_warmup"
     logger.info("Iniciando conectores de OrderFlowAI...")
@@ -220,12 +256,20 @@ async def on_startup():
         connectors.append(bybit_conn)
         await bybit_conn.start()
 
+    snapshot_capture_task = asyncio.create_task(capture_market_data_loop())
     logger.info(f"OrderFlowAI pipeline activo con {len(connectors)} conectores de exchanges.")
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    global connectors, data_capture_status
+    global connectors, data_capture_status, snapshot_capture_task
+    if snapshot_capture_task is not None:
+        snapshot_capture_task.cancel()
+        try:
+            await snapshot_capture_task
+        except asyncio.CancelledError:
+            pass
+        snapshot_capture_task = None
     for conn in connectors:
         await conn.stop()
     connectors.clear()
@@ -319,8 +363,8 @@ async def set_inference_mode_endpoint(payload: dict):
     return JSONResponse({"status": "ok", "inference_mode": new_mode})
 
 
-@app.get("/api/scalping/status")
-async def get_scalping_status():
+def load_scalping_status_counts(now_ms: int):
+    recent_cutoff_ms = now_ms - 24 * 60 * 60 * 1000
     if database_path.exists():
         with sqlite3.connect(database_path, timeout=5) as connection:
             row = connection.execute(
@@ -341,8 +385,45 @@ async def get_scalping_status():
                 """,
                 (CONFIG.scalping.exchange, CONFIG.scalping.symbol),
             ).fetchone()
+            recent_row = connection.execute(
+                """
+                WITH ordered AS (
+                    SELECT observed_at_ms,
+                           observed_at_ms - LAG(observed_at_ms) OVER (
+                               ORDER BY observed_at_ms
+                           ) AS gap_ms
+                    FROM market_observations
+                    WHERE market_source = ?
+                      AND symbol = ?
+                      AND observed_at_ms >= ?
+                )
+                SELECT COUNT(*),
+                       COALESCE(SUM(
+                           CASE WHEN gap_ms <= ? THEN gap_ms ELSE 0 END
+                       ), 0),
+                       COALESCE(MAX(gap_ms), 0)
+                FROM ordered
+                """,
+                (
+                    CONFIG.scalping.exchange,
+                    CONFIG.scalping.symbol,
+                    recent_cutoff_ms,
+                    CONFIG.scalping.max_snapshot_gap_seconds * 1000,
+                ),
+            ).fetchone()
     else:
         row = (0, None, None, 0)
+        recent_row = (0, 0, 0)
+    return row, recent_row
+
+
+@app.get("/api/scalping/status")
+async def get_scalping_status():
+    now_ms = int(time.time() * 1000)
+    row, recent_row = await asyncio.to_thread(
+        load_scalping_status_counts,
+        now_ms,
+    )
 
     return JSONResponse({
         **scalping_engine.status(),
@@ -350,6 +431,13 @@ async def get_scalping_status():
         "first_observation_ms": row[1],
         "last_observation_ms": row[2],
         "hmm_snapshot_count": row[3] or 0,
+        "recent_observations": recent_row[0],
+        "recent_snapshot_coverage_pct": round(
+            min(1.0, recent_row[0] / max(1.0, recent_row[1] / 1000.0)) * 100.0,
+            2,
+        ),
+        "recent_maximum_snapshot_gap_seconds": round(recent_row[2] / 1000.0, 2),
+        "recent_window_hours": 24,
         "minimum_training_observations": CONFIG.scalping.min_training_observations,
         "minimum_observations": scalping_engine.status()["minimum_observations"],
         "max_snapshot_gap_seconds": CONFIG.scalping.max_snapshot_gap_seconds,
@@ -396,6 +484,7 @@ async def run_scalping_backtest(
 
 @app.get("/api/status")
 async def get_status():
+    now_ms = int(time.time() * 1000)
     return JSONResponse({
         "status": "online",
         "symbol": CONFIG.exchange.symbol,
@@ -406,6 +495,17 @@ async def get_status():
         "inference_mode": classifier.inference_mode,
         "detector_config": asdict(CONFIG.classifier),
         "data_capture_status": data_capture_status,
+        "snapshot_interval_seconds": CONFIG.data_capture.sample_interval_seconds,
+        "last_bybit_trade_at_ms": last_bybit_trade_at_ms or None,
+        "seconds_since_last_bybit_trade": (
+            round((now_ms - last_bybit_trade_at_ms) / 1000.0, 2)
+            if last_bybit_trade_at_ms else None
+        ),
+        "last_snapshot_at_ms": last_capture_at_ms or None,
+        "seconds_since_last_snapshot": (
+            round((now_ms - last_capture_at_ms) / 1000.0, 2)
+            if last_capture_at_ms else None
+        ),
         "stored_observations": market_data_store.observation_count() if market_data_store.connection is not None else None,
         "database": "SQLite",
         "connected_clients": len(active_websockets),

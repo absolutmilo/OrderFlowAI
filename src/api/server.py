@@ -455,11 +455,12 @@ async def run_scalping_backtest(
     strategy: str = "flow_momentum",
     timeframe_minutes: int = 5,
     direction_mode: str = "original",
+    early_exit_on_hmm: bool = True,
 ):
     if strategy not in STRATEGIES:
         raise HTTPException(status_code=400, detail="Estrategia de scalping no reconocida.")
-    if timeframe_minutes not in (5, 10, 15):
-        raise HTTPException(status_code=400, detail="El timeframe debe ser 5, 10 o 15 minutos.")
+    if timeframe_minutes not in (1, 5, 10, 15):
+        raise HTTPException(status_code=400, detail="El timeframe debe ser 1, 5, 10 o 15 minutos.")
     if direction_mode not in ("original", "inverse"):
         raise HTTPException(status_code=400, detail="La dirección debe ser original o inverse.")
 
@@ -469,6 +470,7 @@ async def run_scalping_backtest(
             strategy,
             timeframe_minutes,
             direction_mode,
+            early_exit_on_hmm,
         )
     except (sqlite3.Error, ValueError, json.JSONDecodeError) as error:
         logger.exception("No se pudo ejecutar el backtest de scalping.")
@@ -525,9 +527,14 @@ async def get_classification_history(mode: str = "model"):
 
     cutoff_ms = int(time.time() * 1000) - 60 * 60 * 1000
     with sqlite3.connect(database_path, timeout=5) as connection:
+        columns = {
+            col[1] for col in connection.execute("PRAGMA table_info(market_observations)").fetchall()
+        }
+        has_features = "features_json" in columns
+        select_cols = "observed_at_ms, heuristic_scores_json" + (", features_json" if has_features else "")
         rows = connection.execute(
-            """
-            SELECT observed_at_ms, heuristic_scores_json
+            f"""
+            SELECT {select_cols}
             FROM market_observations
             WHERE market_source = ? AND symbol = ? AND observed_at_ms >= ?
             ORDER BY observed_at_ms ASC
@@ -543,7 +550,10 @@ async def get_classification_history(mode: str = "model"):
         "hft_competition",
     )
     samples = []
-    for observed_at_ms, scores_json in rows:
+    for row in rows:
+        observed_at_ms = row[0]
+        scores_json = row[1]
+        features_json = row[2] if has_features and len(row) > 2 else None
         try:
             scores = json.loads(scores_json)
         except json.JSONDecodeError:
@@ -563,12 +573,23 @@ async def get_classification_history(mode: str = "model"):
             if not isinstance(hmm_scores, dict) or not hmm_scores.get("available"):
                 continue
             scores = hmm_scores
+
+        cvd_val = 0.0
+        if features_json:
+            try:
+                feat = json.loads(features_json)
+                cvd_val = float(feat.get("cvd_usd", 0.0))
+            except Exception:
+                pass
+
+        sample_values = {
+            key: scores.get(key, 0.0)
+            for key in keys
+        }
+        sample_values["cvd_usd"] = cvd_val
         samples.append({
             "timestamp_ms": observed_at_ms,
-            "values": {
-                key: scores.get(key, 0.0)
-                for key in keys
-            },
+            "values": sample_values,
         })
 
     return JSONResponse({"mode": mode, "samples": samples})

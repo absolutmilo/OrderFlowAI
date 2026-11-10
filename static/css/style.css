@@ -587,6 +587,16 @@ main {
 .breakout-style .prob-percent, .breakout-style .prob-name { color: var(--breakout-blue); }
 .breakout-style .progress-bar { background: var(--breakout-blue); box-shadow: 0 0 8px var(--breakout-blue); }
 
+.cvd-style .prob-percent, .cvd-style .prob-name { color: #00e5ff; }
+.cvd-style.positive .prob-percent { color: #00e676; text-shadow: 0 0 8px rgba(0, 230, 118, 0.4); }
+.cvd-style.negative .prob-percent { color: #ff5252; text-shadow: 0 0 8px rgba(255, 82, 82, 0.4); }
+.cvd-style .sparkline-line { stroke: #00e5ff; }
+.cvd-style.positive .sparkline-line { stroke: #00e676; }
+.cvd-style.negative .sparkline-line { stroke: #ff5252; }
+.cvd-style .sparkline-dot { fill: #00e5ff; }
+.cvd-style.positive .sparkline-dot { fill: #00e676; }
+.cvd-style.negative .sparkline-dot { fill: #ff5252; }
+
 /* Live Notes Feed */
 .pattern-notes {
   background: #0f151e;

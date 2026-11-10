@@ -167,6 +167,24 @@
           </svg>
           <span class="sparkline-period">Última hora</span>
         </div>
+
+        <!-- 6. CVD Delta Acumulado Timeline -->
+        <div class="prob-row cvd-style">
+          <div class="prob-header">
+            <div>
+              <div class="prob-name">CVD (Delta Acumulado)</div>
+              <div class="prob-desc">Evolución de presión compradora / vendedora (convergencias e imbalances)</div>
+            </div>
+            <div class="prob-percent" id="prob-cvd">$0.0k</div>
+          </div>
+          <svg class="prob-sparkline" viewBox="0 0 240 44" role="img" aria-label="Historial de CVD en la última hora">
+            <path class="sparkline-grid" d="M0 11H240 M0 22H240 M0 33H240"></path>
+            <line x1="0" y1="22" x2="240" y2="22" stroke="rgba(255,255,255,0.18)" stroke-dasharray="2,2"></line>
+            <path class="sparkline-line" id="spark-cvd"></path>
+            <circle class="sparkline-dot" id="spark-dot-cvd" r="2.5"></circle>
+          </svg>
+          <span class="sparkline-period">Línea cero central · Última hora</span>
+        </div>
       </div>
 
       <!-- Notes -->
@@ -238,20 +256,27 @@
         <option value="flow_momentum">Flujo + momentum (base)</option>
         <option value="fourier_breakout">Fourier: anomalía + ruptura</option>
         <option value="whale_trend">Volumen excepcional + tendencia</option>
+        <option value="hmm_probabilistic" selected>HMM-4 Regímenes + Probabilidad Adaptativa</option>
       </select>
       <label for="scalp-timeframe">Temporalidad</label>
       <select id="scalp-timeframe">
-        <option value="5">5 minutos</option>
+        <option value="1">1 minuto (Scalp rápido)</option>
+        <option value="5" selected>5 minutos (Intradía corto)</option>
         <option value="10">10 minutos</option>
-        <option value="15">15 minutos</option>
+        <option value="15">15 minutos (Swing intradía)</option>
       </select>
       <label for="scalp-direction">Dirección</label>
       <select id="scalp-direction">
         <option value="original">Original</option>
         <option value="inverse">Invertida (LONG ↔ SHORT)</option>
       </select>
+      <label for="scalp-hmm-exit">Salida Muro HMM</label>
+      <select id="scalp-hmm-exit">
+        <option value="true" selected>Activa (Muro adverso persistente)</option>
+        <option value="false">Desactivada (Solo ATR)</option>
+      </select>
     </div>
-    <p class="scalp-method-note">Fourier usa dos ciclos cortos, anomalía residual y ruptura; HMM-4 estima regímenes por separado y no detecta armónicos. Volumen+tendencia usa un spike de volumen, EMA de BTC y desequilibrio de flujo. Son proxies de investigación: no confirman manipulación, identidad whale ni contexto SP500/VIX.</p>
+    <p class="scalp-method-note">HMM-4 Probabilístico clasifica regímenes microestructurales (Absorción, Iceberg, Algorítmico, Retail), evalúa confluencia con CVD/Momentum y calibra la probabilidad condicionada de ganancia. Fourier analiza dos ciclos armónicos y anomalía residual. Volumen+tendencia usa picos de volumen y EMA.</p>
     <p id="scalp-data-status" class="data-capture-status">Consultando histórico de Bybit Linear...</p>
     <div class="scalp-results">
       <div>
@@ -296,6 +321,6 @@
   </dialog>
 
   <script src="/static/js/audio.js"></script>
-  <script src="/static/js/app.js?v=20261107-1"></script>
+  <script src="/static/js/app.js?v=20261107-2"></script>
 </body>
 </html>

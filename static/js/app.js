@@ -42,6 +42,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const elProbHft = document.getElementById('prob-hft');
   const elSparkHft = document.getElementById('spark-hft');
 
+  const elProbCvd = document.getElementById('prob-cvd');
+  const elSparkCvd = document.getElementById('spark-cvd');
+
   // Audio Controls
   const btnToggleAudio = document.getElementById('btn-toggle-audio');
   const btnTestAudio = document.getElementById('btn-test-audio');
@@ -51,17 +54,19 @@ document.addEventListener('DOMContentLoaded', () => {
   const selectScalpStrategy = document.getElementById('scalp-strategy');
   const selectScalpTimeframe = document.getElementById('scalp-timeframe');
   const selectScalpDirection = document.getElementById('scalp-direction');
+  const selectScalpHmmExit = document.getElementById('scalp-hmm-exit');
 
   const MAX_TAPE_ROWS = 120;
   const MAX_WHALE_ROWS = 120;
   const PROBABILITY_WINDOW_MS = 60 * 60 * 1000;
   const PROBABILITY_SAMPLE_MS = 5 * 1000;
   const PROBABILITY_SERIES = {
-    algo_institutional: { path: elSparkAlgo, dot: document.getElementById('spark-dot-algo') },
-    iceberg: { path: elSparkIceberg, dot: document.getElementById('spark-dot-iceberg') },
-    absorption: { path: elSparkAbsorption, dot: document.getElementById('spark-dot-absorption') },
-    retail: { path: elSparkRetail, dot: document.getElementById('spark-dot-retail') },
-    hft_competition: { path: elSparkHft, dot: document.getElementById('spark-dot-hft') },
+    algo_institutional: { path: elSparkAlgo, dot: document.getElementById('spark-dot-algo'), isCvd: false },
+    iceberg: { path: elSparkIceberg, dot: document.getElementById('spark-dot-iceberg'), isCvd: false },
+    absorption: { path: elSparkAbsorption, dot: document.getElementById('spark-dot-absorption'), isCvd: false },
+    retail: { path: elSparkRetail, dot: document.getElementById('spark-dot-retail'), isCvd: false },
+    hft_competition: { path: elSparkHft, dot: document.getElementById('spark-dot-hft'), isCvd: false },
+    cvd_usd: { path: elSparkCvd, dot: document.getElementById('spark-dot-cvd'), isCvd: true, elVal: elProbCvd, row: document.querySelector('.cvd-style') },
   };
   const probabilityHistory = Object.fromEntries(
     Object.keys(PROBABILITY_SERIES).map((key) => [key, []])
@@ -264,6 +269,7 @@ document.addEventListener('DOMContentLoaded', () => {
           strategy: selectScalpStrategy ? selectScalpStrategy.value : 'flow_momentum',
           timeframe_minutes: selectScalpTimeframe ? selectScalpTimeframe.value : '5',
           direction_mode: selectScalpDirection ? selectScalpDirection.value : 'original',
+          early_exit_on_hmm: selectScalpHmmExit ? selectScalpHmmExit.value : 'true',
         });
         const response = await fetch(`/api/scalping/backtest?${query}`, { method: 'POST' });
         const data = await response.json();
@@ -307,13 +313,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (data.type === 'order_flow_tick') {
           handleTradeTick(data.trade);
-          updateProbabilities(data.probabilities);
+          const cvdVal = data.metrics ? data.metrics.cvd_usd : null;
+          updateProbabilities(data.probabilities, cvdVal);
           if (data.metrics) updateMetrics(data.metrics);
           if (data.exchange_stats) updateExchangeStats(data.exchange_stats);
           updateSystemMode(data.inference_mode, data.data_capture_status, data.detector_config);
           renderScalpingSignal(data.scalping);
         } else if (data.type === 'snapshot') {
-          updateProbabilities(data.probabilities);
+          const cvdVal = data.metrics ? data.metrics.cvd_usd : null;
+          updateProbabilities(data.probabilities, cvdVal);
           if (data.metrics) updateMetrics(data.metrics);
           if (data.exchange_stats) updateExchangeStats(data.exchange_stats);
           updateSystemMode(data.inference_mode, data.data_capture_status, data.detector_config);
@@ -415,7 +423,7 @@ document.addEventListener('DOMContentLoaded', () => {
     elTps.textContent = `${metrics.trades_per_second.toFixed(1)} /s`;
   }
 
-  function updateProbabilities(probs) {
+  function updateProbabilities(probs, cvdUsd = null) {
     if (!probs) return;
 
     if (elClassificationBadge) {
@@ -451,7 +459,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 5. HFT
     elProbHft.textContent = `${probs.hft_competition}%`;
-    if (addProbabilitySample(probs, Number(probs.timestamp_ms) || Date.now())) {
+
+    // 6. CVD Display
+    if (cvdUsd !== null && elProbCvd) {
+      const sign = cvdUsd >= 0 ? '+' : '';
+      elProbCvd.textContent = `${sign}$${(cvdUsd / 1000).toFixed(1)}k`;
+      const row = document.querySelector('.cvd-style');
+      if (row) {
+        row.classList.toggle('positive', cvdUsd >= 0);
+        row.classList.toggle('negative', cvdUsd < 0);
+      }
+    }
+
+    if (addProbabilitySample(probs, Number(probs.timestamp_ms) || Date.now(), cvdUsd)) {
       renderProbabilitySparklines();
     }
 
@@ -527,16 +547,21 @@ document.addEventListener('DOMContentLoaded', () => {
     renderProbabilitySparklines();
   }
 
-  function addProbabilitySample(probabilities, timestamp) {
+  function addProbabilitySample(probabilities, timestamp, cvdUsd = null) {
     const bucket = Math.floor(timestamp / PROBABILITY_SAMPLE_MS);
     if (bucket === lastProbabilitySampleBucket) return false;
     lastProbabilitySampleBucket = bucket;
 
     Object.keys(PROBABILITY_SERIES).forEach((key) => {
-      const value = Number(probabilities[key]);
+      const isCvd = PROBABILITY_SERIES[key].isCvd;
+      const rawValue = isCvd ? (cvdUsd !== null ? cvdUsd : probabilities[key]) : probabilities[key];
+      const value = Number(rawValue);
       if (!Number.isFinite(value)) return;
       const samples = probabilityHistory[key];
-      samples.push({ timestamp, value: Math.max(0, Math.min(100, value)) });
+      samples.push({
+        timestamp,
+        value: isCvd ? value : Math.max(0, Math.min(100, value)),
+      });
       while (
         samples.length
         && (timestamp - samples[0].timestamp > PROBABILITY_WINDOW_MS
@@ -557,6 +582,13 @@ document.addEventListener('DOMContentLoaded', () => {
       let segment = [];
       let previousTimestamp = null;
       let lastPoint = null;
+
+      const isCvd = elements.isCvd;
+      let maxAbsCvd = 1000;
+      if (isCvd && samples.length) {
+        maxAbsCvd = Math.max(1000, ...samples.map((s) => Math.abs(s.value)));
+      }
+
       samples.forEach((sample) => {
         if (
           previousTimestamp !== null
@@ -566,9 +598,11 @@ document.addEventListener('DOMContentLoaded', () => {
           segment = [];
         }
         const x = Math.max(0, Math.min(240, ((sample.timestamp - start) / PROBABILITY_WINDOW_MS) * 240));
-        const y = 40 - (sample.value / 100) * 36;
+        const y = isCvd
+          ? Math.max(4, Math.min(40, 22 - (sample.value / maxAbsCvd) * 18))
+          : (40 - (sample.value / 100) * 36);
         segment.push(`${segment.length ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`);
-        lastPoint = { x, y };
+        lastPoint = { x, y, rawValue: sample.value };
         previousTimestamp = sample.timestamp;
       });
       if (segment.length) segments.push(segment);
@@ -578,6 +612,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (lastPoint) {
           elements.dot.setAttribute('cx', lastPoint.x.toFixed(1));
           elements.dot.setAttribute('cy', lastPoint.y.toFixed(1));
+        }
+      }
+      if (isCvd && lastPoint) {
+        if (elements.row) {
+          elements.row.classList.toggle('positive', lastPoint.rawValue >= 0);
+          elements.row.classList.toggle('negative', lastPoint.rawValue < 0);
+        }
+        if (elements.elVal) {
+          const sign = lastPoint.rawValue >= 0 ? '+' : '';
+          const absVal = Math.abs(lastPoint.rawValue);
+          elements.elVal.textContent = `${sign}$${(absVal / 1000).toFixed(1)}k`;
         }
       }
     });
@@ -609,10 +654,11 @@ document.addEventListener('DOMContentLoaded', () => {
       [...buckets.entries()].sort(([left], [right]) => left - right).forEach(([timestamp, values]) => {
         Object.keys(PROBABILITY_SERIES).forEach((key) => {
           const value = values[key];
+          const isCvd = PROBABILITY_SERIES[key].isCvd;
           if (Number.isFinite(value)) {
             probabilityHistory[key].push({
               timestamp,
-              value: Math.max(0, Math.min(100, value)),
+              value: isCvd ? value : Math.max(0, Math.min(100, value)),
             });
           }
         });

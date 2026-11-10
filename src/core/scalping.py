@@ -17,6 +17,7 @@ STRATEGIES = {
     "flow_momentum": "Flujo + momentum (base)",
     "fourier_breakout": "Fourier: anomalía + ruptura",
     "whale_trend": "Volumen excepcional + tendencia",
+    "hmm_probabilistic": "HMM-4 Regímenes + Probabilidad Adaptativa",
 }
 
 
@@ -45,11 +46,12 @@ class ScalpingEngine:
         strategy: str = "flow_momentum",
         timeframe_minutes: int = 5,
         direction_mode: str = "original",
+        early_exit_on_hmm: bool = True,
     ) -> Dict[str, object]:
         if strategy not in STRATEGIES:
             raise ValueError(f"Estrategia desconocida: {strategy}")
-        if timeframe_minutes not in (5, 10, 15):
-            raise ValueError("El timeframe debe ser 5, 10 o 15 minutos.")
+        if timeframe_minutes not in (1, 5, 10, 15):
+            raise ValueError("El timeframe debe ser 1, 5, 10 o 15 minutos.")
         if direction_mode not in ("original", "inverse"):
             raise ValueError("El modo de dirección debe ser original o inverse.")
 
@@ -57,6 +59,12 @@ class ScalpingEngine:
         self.last_condition = False
         self.last_signal = None
         timestamps, prices, imbalance, volume_rate = self._load_observations()
+        scores = self._load_scores() if (strategy == "hmm_probabilistic" or early_exit_on_hmm) else []
+        adverse_walls = (
+            self._build_adverse_walls(scores, len(timestamps))
+            if (early_exit_on_hmm and scores and len(scores) >= len(timestamps))
+            else None
+        )
         count = len(timestamps)
         split_index = int(count * 0.7)
         if split_index < self.config.min_training_observations:
@@ -75,6 +83,7 @@ class ScalpingEngine:
                 "source": self.config.exchange,
                 "strategy": strategy,
                 "strategy_name": STRATEGIES[strategy],
+                "early_exit_on_hmm": early_exit_on_hmm,
                 "timeframe_minutes": timeframe_minutes,
                 "direction_mode": direction_mode,
             }
@@ -110,6 +119,7 @@ class ScalpingEngine:
                 "source": self.config.exchange,
                 "strategy": strategy,
                 "strategy_name": STRATEGIES[strategy],
+                "early_exit_on_hmm": early_exit_on_hmm,
                 "timeframe_minutes": timeframe_minutes,
                 "direction_mode": direction_mode,
                 **data_quality,
@@ -148,6 +158,7 @@ class ScalpingEngine:
                     "source": self.config.exchange,
                     "strategy": strategy,
                     "strategy_name": STRATEGIES[strategy],
+                "early_exit_on_hmm": early_exit_on_hmm,
                     "timeframe_minutes": timeframe_minutes,
                     "direction_mode": direction_mode,
                 }
@@ -195,7 +206,7 @@ class ScalpingEngine:
         strategy_diagnostics = {}
         if strategy != "flow_momentum":
             cached_strategy_signals = self._strategy_signal_indices(
-                strategy, bars, strategy_diagnostics
+                strategy, bars, strategy_diagnostics, scores=scores
             )
         training_signal_count = sum(
             1 for index, _ in (cached_strategy_signals or [])
@@ -231,6 +242,7 @@ class ScalpingEngine:
                 parameters,
                 start_index=60,
                 end_index=split_index,
+                adverse_walls=adverse_walls,
             )
             training = self._summarize(train_trades)
             max_training_trades = max(max_training_trades, int(training["trade_count"]))
@@ -274,6 +286,7 @@ class ScalpingEngine:
                 "source": self.config.exchange,
                 "strategy": strategy,
                 "strategy_name": STRATEGIES[strategy],
+                "early_exit_on_hmm": early_exit_on_hmm,
                 "timeframe_minutes": timeframe_minutes,
                 "direction_mode": direction_mode,
                 "direction_mode_name": (
@@ -313,6 +326,7 @@ class ScalpingEngine:
             best_parameters,
             start_index=validation_start,
             end_index=count,
+            adverse_walls=adverse_walls,
         )
         validation = self._summarize(validation_trades)
         validated = (
@@ -345,6 +359,7 @@ class ScalpingEngine:
             "symbol": self.config.symbol,
             "strategy": strategy,
             "strategy_name": STRATEGIES[strategy],
+                "early_exit_on_hmm": early_exit_on_hmm,
             "timeframe_minutes": timeframe_minutes,
             "direction_mode": direction_mode,
             "direction_mode_name": (
@@ -473,6 +488,49 @@ class ScalpingEngine:
         }
         return result
 
+    def _load_scores(self) -> List[Dict[str, object]]:
+        if not self.database_path or not Path(self.database_path).exists():
+            return []
+        try:
+            with sqlite3.connect(self.database_path, timeout=5) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT heuristic_scores_json
+                    FROM market_observations
+                    WHERE market_source = ? AND symbol = ?
+                    ORDER BY observed_at_ms ASC
+                    """,
+                    (self.config.exchange, self.config.symbol),
+                ).fetchall()
+            scores = []
+            for (scores_json,) in rows:
+                try:
+                    scores.append(json.loads(scores_json))
+                except Exception:
+                    scores.append({})
+            return scores
+        except Exception:
+            return []
+
+    @staticmethod
+    def _build_adverse_walls(scores: List[Dict[str, object]], length: int) -> np.ndarray:
+        adverse = np.zeros(length, dtype=np.int8)
+        if not scores or len(scores) < length:
+            return adverse
+        regimes = [
+            scores[i].get("hmm_4", {}).get("dominant_regime", "UNKNOWN")
+            if isinstance(scores[i].get("hmm_4"), dict)
+            else "UNKNOWN"
+            for i in range(length)
+        ]
+        for i in range(2, length):
+            tail = regimes[i-2:i+1]
+            if all(r in ("ABSORPTION_SELL", "ICEBERG_VENDEDOR") for r in tail):
+                adverse[i] = -1
+            elif all(r in ("ABSORPTION_BUY", "ICEBERG_COMPRADOR") for r in tail):
+                adverse[i] = 1
+        return adverse
+
     def _load_observations(
         self,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -561,11 +619,14 @@ class ScalpingEngine:
         strategy: str,
         bars: Dict[str, np.ndarray],
         diagnostics: Optional[Dict[str, int]] = None,
+        scores: Optional[List[Dict[str, object]]] = None,
     ) -> List[Tuple[int, int]]:
         if strategy == "fourier_breakout":
             return self._fourier_breakout_signals(bars, diagnostics)
         if strategy == "whale_trend":
             return self._whale_trend_signals(bars)
+        if strategy == "hmm_probabilistic":
+            return self._hmm_probabilistic_signals(bars, scores, diagnostics)
         raise ValueError(f"Estrategia sin implementación: {strategy}")
 
     @staticmethod
@@ -584,6 +645,52 @@ class ScalpingEngine:
         for index in range(1, len(values)):
             result[index] = alpha * values[index] + (1 - alpha) * result[index - 1]
         return result
+
+    @staticmethod
+    def _hmm_probabilistic_signals(
+        bars: Dict[str, np.ndarray],
+        scores: Optional[List[Dict[str, object]]] = None,
+        diagnostics: Optional[Dict[str, int]] = None,
+    ) -> List[Tuple[int, int]]:
+        closes = bars["close"]
+        opens = bars["open"]
+        imbalances = bars["imbalance"]
+        snapshot_indices = bars["snapshot_indices"]
+        count = len(closes)
+        signals = []
+
+        for index in range(1, count):
+            snap_idx = int(snapshot_indices[index])
+            dom_regime = "UNKNOWN"
+            if scores and snap_idx < len(scores):
+                hmm_data = scores[snap_idx].get("hmm_4", {})
+                if isinstance(hmm_data, dict):
+                    dom_regime = hmm_data.get("dominant_regime", "UNKNOWN")
+
+            bullish = closes[index] > opens[index]
+            bearish = closes[index] < opens[index]
+            imb = imbalances[index]
+
+            if dom_regime == "ICEBERG_COMPRADOR" and imb >= 0.1:
+                signals.append((snap_idx, 1))
+            elif dom_regime == "ICEBERG_VENDEDOR" and imb <= -0.1:
+                signals.append((snap_idx, -1))
+            elif dom_regime == "ABSORPTION_BUY" and bullish and imb >= 0.05:
+                signals.append((snap_idx, 1))
+            elif dom_regime == "ABSORPTION_SELL" and bearish and imb <= -0.05:
+                signals.append((snap_idx, -1))
+            elif dom_regime == "UNKNOWN":
+                if bullish and imb >= 0.3:
+                    signals.append((snap_idx, 1))
+                elif bearish and imb <= -0.3:
+                    signals.append((snap_idx, -1))
+
+        if diagnostics is not None:
+            diagnostics.update({
+                "complete_bars": count,
+                "signals": len(signals),
+            })
+        return signals
 
     @staticmethod
     def _whale_trend_signals(
@@ -855,6 +962,7 @@ class ScalpingEngine:
         parameters: ScalpParameters,
         start_index: int,
         end_index: int,
+        adverse_walls: Optional[np.ndarray] = None,
     ) -> List[Dict[str, object]]:
         round_trip_cost = 2 * (
             self.config.taker_fee_bps_per_side + self.config.slippage_bps_per_side
@@ -901,6 +1009,15 @@ class ScalpingEngine:
                     exit_index = index
                     exit_reason = "take_profit"
                     break
+                if (
+                    adverse_walls is not None
+                    and (timestamps[index] - timestamps[entry_index] >= 15_000)
+                    and adverse_walls[index] == -direction
+                ):
+                    signed_return = signed
+                    exit_index = index
+                    exit_reason = "adverse_hmm"
+                    break
             if data_gap:
                 continue
             if signed_return is None:
@@ -934,7 +1051,7 @@ class ScalpingEngine:
             reason: ScalpingEngine._summarize_metrics(
                 [trade for trade in trades if trade["exit_reason"] == reason]
             )
-            for reason in ("stop_loss", "take_profit", "time")
+            for reason in (("stop_loss", "take_profit", "time", "adverse_hmm") if any(t.get("exit_reason") == "adverse_hmm" for t in trades) else ("stop_loss", "take_profit", "time"))
         }
         return summary
 

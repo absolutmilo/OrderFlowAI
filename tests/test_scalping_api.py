@@ -95,7 +95,7 @@ def test_backtest_endpoint_returns_engine_result_and_broadcasts():
 
     assert response.status_code == 200
     assert response.body == b'{"status":"validated","alert_enabled":true}'
-    engine.run_backtest.assert_called_once_with("flow_momentum", 5, "original")
+    engine.run_backtest.assert_called_once_with("flow_momentum", 5, "original", True)
     broadcast.assert_awaited_once()
 
 
@@ -296,7 +296,7 @@ def test_backtest_endpoint_passes_selected_strategy_and_timeframe():
             )
 
     assert response.status_code == 200
-    engine.run_backtest.assert_called_once_with("fourier_breakout", 10, "inverse")
+    engine.run_backtest.assert_called_once_with("fourier_breakout", 10, "inverse", True)
 
 
 def test_backtest_endpoint_rejects_unsupported_timeframe():
@@ -329,6 +329,84 @@ def test_backtest_endpoint_reports_storage_errors():
             assert error.detail == "database unavailable"
         else:
             raise AssertionError("Expected HTTP 503 for database failure.")
+
+
+def test_candle_backtest_downloads_bybit_bars_and_never_uses_sqlite():
+    now_ms = 1_800_000_000_000
+    downloaded = [
+        {
+            "time_ms": now_ms - 4 * 300_000,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+            "volume": 1.0,
+        },
+        {
+            "time_ms": now_ms - 3 * 300_000,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+            "volume": 1.0,
+        },
+        {
+            "time_ms": now_ms - 2 * 300_000,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+            "volume": 1.0,
+        },
+        {
+            "time_ms": now_ms - 300_000,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+            "volume": 1.0,
+        },
+    ]
+    engine = Mock()
+    engine.run_backtest.return_value = {"status": "collecting_candle_data"}
+
+    with patch.object(server.time, "time", return_value=now_ms / 1000):
+        with patch.object(server, "candle_backtest_engine", engine):
+            with patch.object(
+                server, "load_or_update_bybit_klines", new_callable=AsyncMock
+            ) as load_klines:
+                load_klines.return_value = (downloaded, "downloaded", len(downloaded))
+                with patch.object(server, "broadcast_message", new_callable=AsyncMock):
+                    response = asyncio.run(
+                        server.run_candle_backtest(timeframe_minutes=10)
+                    )
+
+    assert response.status_code == 200
+    load_klines.assert_awaited_once_with(
+        cache_dir=server.candle_cache_path,
+        symbol=server.CONFIG.scalping.symbol,
+        interval="5",
+        lookback_days=server.CONFIG.scalping.candle_backtest_lookback_days,
+        now_ms=now_ms,
+    )
+    response_data = json.loads(response.body)
+    assert response_data["cache_status"] == "downloaded"
+    assert response_data["downloaded_candles"] == len(downloaded)
+    candles, timeframe, direction, days = engine.run_backtest.call_args.args
+    assert len(candles) == 2
+    assert candles[0]["volume"] == 2.0
+    assert timeframe == 10
+    assert direction == "original"
+    assert days == 30
+
+
+def test_candle_backtest_rejects_out_of_range_lookback():
+    try:
+        asyncio.run(server.run_candle_backtest(lookback_days=31))
+    except HTTPException as error:
+        assert error.status_code == 400
+    else:
+        raise AssertionError("Expected HTTP 400 for an unsupported lookback.")
 
 
 def test_dashboard_index_is_revalidated_by_browsers():

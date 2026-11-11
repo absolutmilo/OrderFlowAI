@@ -12,6 +12,7 @@ htmlcov/
 # Local market data and SQLite sidecar files
 data/*.sqlite3
 data/*.sqlite3-*
+data/bybit_klines_cache/
 
 # Local secrets and environment overrides
 .env

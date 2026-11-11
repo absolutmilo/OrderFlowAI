@@ -248,7 +248,10 @@
         <span id="scalp-title">Setups de scalping BTCUSDT · Bybit Linear</span>
         <p class="scalp-subtitle">Compara hipótesis de entrada con validación cronológica; solo paper trading</p>
       </div>
-      <button class="btn-audio" id="btn-scalp-backtest" type="button">Optimizar y validar backtest</button>
+      <div class="scalp-actions">
+        <button class="btn-audio" id="btn-scalp-backtest" type="button">Validar order flow (SQLite)</button>
+        <button class="btn-audio" id="btn-scalp-candle-backtest" type="button">Validar velas OHLCV directo</button>
+      </div>
     </div>
     <div class="scalp-controls">
       <label for="scalp-strategy">Estrategia</label>
@@ -270,13 +273,13 @@
         <option value="original">Original</option>
         <option value="inverse">Invertida (LONG ↔ SHORT)</option>
       </select>
-      <label for="scalp-hmm-exit">Salida Muro HMM</label>
+      <label for="scalp-hmm-exit">Salida Muro HMM (SQLite)</label>
       <select id="scalp-hmm-exit">
         <option value="true" selected>Activa (Muro adverso persistente)</option>
         <option value="false">Desactivada (Solo ATR)</option>
       </select>
     </div>
-    <p class="scalp-method-note">HMM-4 Probabilístico clasifica regímenes microestructurales (Absorción, Iceberg, Algorítmico, Retail), evalúa confluencia con CVD/Momentum y calibra la probabilidad condicionada de ganancia. Fourier analiza dos ciclos armónicos y anomalía residual. Volumen+tendencia usa picos de volumen y EMA.</p>
+    <p class="scalp-method-note">El backtest SQLite usa snapshots de trades y order flow; el modo OHLCV descarga velas Bybit Linear de los últimos 30 días y evalúa EMA 8/21 + momentum + confirmación de volumen. Son pruebas distintas: un resultado OHLCV no valida ni activa señales live de order flow. HMM-4, Fourier y volumen+tendencia solo aplican al backtest SQLite.</p>
     <p id="scalp-data-status" class="data-capture-status">Consultando histórico de Bybit Linear...</p>
     <div class="scalp-results">
       <div>
@@ -321,6 +324,6 @@
   </dialog>
 
   <script src="/static/js/audio.js"></script>
-  <script src="/static/js/app.js?v=20261107-2"></script>
+  <script src="/static/js/app.js?v=20261110-1"></script>
 </body>
 </html>

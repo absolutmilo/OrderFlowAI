@@ -10,6 +10,7 @@ import logging
 import os
 import sqlite3
 import time
+import aiohttp
 from dataclasses import asdict
 from pathlib import Path
 from typing import Set, List, Optional
@@ -23,7 +24,9 @@ from src.core.aggregator import TradeAggregator
 from src.core.classifier import MicrostructureClassifier
 from src.core.market_data_store import MarketDataStore
 from src.core.scalping import STRATEGIES, ScalpingEngine
+from src.core.candle_backtest import CandleBacktestEngine, aggregate_klines
 from src.connectors.binance import BinanceConnector
+from src.connectors.bybit_kline_cache import load_or_update_bybit_klines
 from src.connectors.bybit import BybitLinearConnector
 from src.api.chart_routes import router as chart_router
 from config import CONFIG
@@ -51,6 +54,8 @@ market_data_store = MarketDataStore(
     CONFIG.data_capture.label_min_move_bps,
 )
 scalping_engine = ScalpingEngine(database_path, CONFIG.scalping)
+candle_backtest_engine = CandleBacktestEngine(CONFIG.scalping)
+candle_cache_path = Path(__file__).resolve().parents[2] / CONFIG.scalping.candle_cache_path
 active_websockets: Set[WebSocket] = set()
 connectors: List = []
 trade_counter = 0
@@ -480,6 +485,69 @@ async def run_scalping_backtest(
         "type": "scalping_backtest",
         "backtest": result,
         "alert_enabled": result.get("alert_enabled", False),
+    })
+    return JSONResponse(result)
+
+
+@app.post("/api/scalping/candle-backtest")
+async def run_candle_backtest(
+    timeframe_minutes: int = 5,
+    direction_mode: str = "original",
+    lookback_days: int = CONFIG.scalping.candle_backtest_lookback_days,
+):
+    if timeframe_minutes not in (1, 5, 10, 15):
+        raise HTTPException(status_code=400, detail="El timeframe debe ser 1, 5, 10 o 15 minutos.")
+    if direction_mode not in ("original", "inverse"):
+        raise HTTPException(status_code=400, detail="La dirección debe ser original o inverse.")
+    if not 7 <= lookback_days <= 30:
+        raise HTTPException(status_code=400, detail="El periodo debe estar entre 7 y 30 días.")
+
+    source_interval_minutes = 5 if timeframe_minutes == 10 else timeframe_minutes
+    source_interval = str(source_interval_minutes)
+    now_ms = int(time.time() * 1000)
+    try:
+        downloaded, cache_status, downloaded_count = await load_or_update_bybit_klines(
+            cache_dir=candle_cache_path,
+            symbol=CONFIG.scalping.symbol,
+            interval=source_interval,
+            lookback_days=lookback_days,
+            now_ms=now_ms,
+        )
+        lookback_start_ms = now_ms - lookback_days * 24 * 60 * 60 * 1000
+        completed = [
+            candle for candle in downloaded
+            if (
+                lookback_start_ms <= int(candle["time_ms"])
+                and int(candle["time_ms"]) + source_interval_minutes * 60_000 <= now_ms
+            )
+        ]
+        candles = aggregate_klines(
+            completed,
+            source_interval_minutes,
+            timeframe_minutes,
+        )
+        result = await asyncio.to_thread(
+            candle_backtest_engine.run_backtest,
+            candles,
+            timeframe_minutes,
+            direction_mode,
+            lookback_days,
+        )
+        result["cache_status"] = cache_status
+        result["downloaded_candles"] = downloaded_count
+    except (
+        RuntimeError,
+        ValueError,
+        OSError,
+        asyncio.TimeoutError,
+        aiohttp.ClientError,
+    ) as error:
+        logger.exception("No se pudo ejecutar el backtest OHLCV descargado de Bybit.")
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    await broadcast_message({
+        "type": "scalping_candle_backtest",
+        "backtest": result,
     })
     return JSONResponse(result)
 

@@ -55,6 +55,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const selectScalpTimeframe = document.getElementById('scalp-timeframe');
   const selectScalpDirection = document.getElementById('scalp-direction');
   const selectScalpHmmExit = document.getElementById('scalp-hmm-exit');
+  const btnScalpCandleBacktest = document.getElementById('btn-scalp-candle-backtest');
 
   const MAX_TAPE_ROWS = 120;
   const MAX_WHALE_ROWS = 120;
@@ -206,12 +207,25 @@ document.addEventListener('DOMContentLoaded', () => {
     const exitsElement = document.getElementById('scalp-backtest-exits');
     if (!resultElement || !metricsElement || !backtest) return;
 
-    resultElement.textContent = backtest.message || `Resultado: ${backtest.status}`;
+    const cacheLabel = {
+      cached: 'Velas reutilizadas desde caché local.',
+      updated: `Caché actualizada con ${Number(backtest.downloaded_candles || 0).toLocaleString('es-ES')} velas recientes.`,
+      downloaded: `Histórico descargado y guardado en caché (${Number(backtest.downloaded_candles || 0).toLocaleString('es-ES')} velas).`,
+      resumed: `Descarga histórica reanudada desde la caché (${Number(backtest.downloaded_candles || 0).toLocaleString('es-ES')} velas adicionales).`,
+    }[backtest.cache_status];
+    resultElement.textContent = `${backtest.message || `Resultado: ${backtest.status}`}${cacheLabel ? ` ${cacheLabel}` : ''}`;
     if (backtest.validation) {
       const validation = backtest.validation;
       const training = backtest.training;
       const parameters = backtest.parameters;
-      metricsElement.textContent = `Estrategia: ${backtest.strategy_name} · ${backtest.timeframe_minutes} min · dirección ${backtest.direction_mode_name || 'Original'}. Entrenamiento (${training.trade_count} ops): bruto ${training.gross_expectancy_bps} bps/operación, neto ${training.expectancy_bps} bps/operación. Validación (${validation.trade_count} ops): bruto ${validation.gross_expectancy_bps} bps/operación, neto ${validation.expectancy_bps} bps/operación · aciertos netos ${validation.win_rate_pct}% · PF ${validation.profit_factor} · DD ${validation.max_drawdown_bps} bps · costos ${validation.total_costs_bps} bps. SL ${parameters.stop_atr_multiple} ATR, TP ${parameters.target_atr_multiple} ATR.`;
+      const candleSource = backtest.data_source === 'bybit_rest_klines';
+      const sampleDescription = candleSource
+        ? `${Number(backtest.candle_count || 0).toLocaleString('es-ES')} velas OHLCV (${backtest.lookback_days} días)`
+        : 'snapshots guardados en SQLite';
+      const parameterDescription = candleSource
+        ? `EMA ${parameters.ema_fast_period}/${parameters.ema_slow_period}, volumen ${parameters.volume_lookback_bars} velas, horizonte ${parameters.holding_period_bars} velas`
+        : `SL ${parameters.stop_atr_multiple} ATR, TP ${parameters.target_atr_multiple} ATR`;
+      metricsElement.textContent = `Estrategia: ${backtest.strategy_name} · ${backtest.timeframe_minutes} min · dirección ${backtest.direction_mode_name || 'Original'} · ${sampleDescription}. Entrenamiento (${training.trade_count} ops): bruto ${training.gross_expectancy_bps} bps/operación, neto ${training.expectancy_bps} bps/operación. Validación (${validation.trade_count} ops): bruto ${validation.gross_expectancy_bps} bps/operación, neto ${validation.expectancy_bps} bps/operación · aciertos netos ${validation.win_rate_pct}% · PF ${validation.profit_factor} · DD ${validation.max_drawdown_bps} bps · costos ${validation.total_costs_bps} bps. ${parameterDescription}.`;
       if (breakdownElement && validation.by_direction) {
         const long = validation.by_direction.LONG;
         const short = validation.by_direction.SHORT;
@@ -226,7 +240,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const diagnostics = backtest.signal_diagnostics || {};
         const bars = Number(backtest.training_bars || 0);
         const requiredBars = Number(backtest.required_training_bars || 0);
-        metricsElement.textContent = `${backtest.strategy_name} · ${backtest.timeframe_minutes} min · dirección ${backtest.direction_mode_name || 'Original'}. ${bars} velas de entrenamiento${requiredBars ? ` (${requiredBars} requeridas)` : ''} · ${Number(backtest.training_signal_count || 0)} señales · máximo ${Number(backtest.max_training_trades || 0)} operaciones simuladas; se requieren ${Number(backtest.minimum_training_trades || 0)}.`;
+        const candleLabel = backtest.data_source === 'bybit_rest_klines'
+          ? `OHLCV descargado: ${Number(backtest.candle_count || 0).toLocaleString('es-ES')} velas · `
+          : '';
+        metricsElement.textContent = `${backtest.strategy_name} · ${backtest.timeframe_minutes} min · dirección ${backtest.direction_mode_name || 'Original'}. ${candleLabel}${bars} velas de entrenamiento${requiredBars ? ` (${requiredBars} requeridas)` : ''} · ${Number(backtest.training_signal_count || 0)} señales · máximo ${Number(backtest.max_training_trades || 0)} operaciones simuladas; se requieren ${Number(backtest.minimum_training_trades || 0)}.`;
         if (breakdownElement) {
           breakdownElement.textContent = diagnostics.complete_bars !== undefined
             ? `Diagnóstico Fourier: ${diagnostics.raw_anomalies} anomalías · ${diagnostics.persistent_anomaly_bars} barras anómalas persistentes · ${diagnostics.completed_zones} zonas cerradas · ${diagnostics.context_qualified_bars} barras con contexto · ${diagnostics.breakout_candidates} rupturas.`
@@ -236,7 +253,9 @@ document.addEventListener('DOMContentLoaded', () => {
         metricsElement.textContent = backtest.status === 'insufficient_data_quality'
           ? `Última validación: cobertura histórica ${Number(backtest.snapshot_coverage_pct || 0)}% · hueco máximo ${Number(backtest.maximum_snapshot_gap_seconds || 0)} s. Se requiere captura continua para validar el backtest.`
           : backtest.observations !== undefined
-            ? `${backtest.strategy_name || ''} · ${backtest.timeframe_minutes || ''} min. ${Number(backtest.observations).toLocaleString('es-ES')} observaciones Bybit Linear; ${Number(backtest.training_observations || 0).toLocaleString('es-ES')} snapshots en entrenamiento${backtest.training_bars !== undefined ? `; ${backtest.training_bars}/${backtest.required_training_bars || '?'} velas completas` : ''}${backtest.required_training_observations !== undefined ? `; se requieren ${Number(backtest.required_training_observations).toLocaleString('es-ES')} para entrenar y ${Number(backtest.required_observations || 0).toLocaleString('es-ES')} en total` : ''}.`
+            ? backtest.data_source === 'bybit_rest_klines'
+              ? `${backtest.strategy_name} · ${backtest.timeframe_minutes} min. ${Number(backtest.candle_count || 0).toLocaleString('es-ES')} velas OHLCV descargadas; ${Number(backtest.training_observations || 0).toLocaleString('es-ES')} en entrenamiento.`
+              : `${backtest.strategy_name || ''} · ${backtest.timeframe_minutes || ''} min. ${Number(backtest.observations).toLocaleString('es-ES')} observaciones Bybit Linear; ${Number(backtest.training_observations || 0).toLocaleString('es-ES')} snapshots en entrenamiento${backtest.training_bars !== undefined ? `; ${backtest.training_bars}/${backtest.required_training_bars || '?'} velas completas` : ''}${backtest.required_training_observations !== undefined ? `; se requieren ${Number(backtest.required_training_observations).toLocaleString('es-ES')} para entrenar y ${Number(backtest.required_observations || 0).toLocaleString('es-ES')} en total` : ''}.`
           : '';
         if (breakdownElement) breakdownElement.textContent = '';
       }
@@ -286,7 +305,38 @@ document.addEventListener('DOMContentLoaded', () => {
         if (resultElement) resultElement.textContent = `Backtest fallido: ${error.message}`;
       } finally {
         btnScalpBacktest.disabled = false;
-        btnScalpBacktest.textContent = 'Optimizar y validar backtest';
+        btnScalpBacktest.textContent = 'Validar order flow (SQLite)';
+      }
+    });
+  }
+
+  if (btnScalpCandleBacktest) {
+    btnScalpCandleBacktest.addEventListener('click', async () => {
+      btnScalpCandleBacktest.disabled = true;
+      btnScalpCandleBacktest.textContent = 'Revisando caché...';
+      const resultElement = document.getElementById('scalp-backtest-result');
+      if (resultElement) {
+        resultElement.textContent = 'Revisando el histórico guardado; solo se descargarán velas si faltan.';
+      }
+      try {
+        const query = new URLSearchParams({
+          timeframe_minutes: selectScalpTimeframe ? selectScalpTimeframe.value : '5',
+          direction_mode: selectScalpDirection ? selectScalpDirection.value : 'original',
+        });
+        const response = await fetch(`/api/scalping/candle-backtest?${query}`, { method: 'POST' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || `Error HTTP ${response.status}`);
+        renderScalpingBacktest(data);
+      } catch (error) {
+        console.error('Error ejecutando el backtest OHLCV de Bybit:', error);
+        if (resultElement) {
+          resultElement.textContent = error.message.includes('10016')
+            ? 'Bybit está respondiendo con un error temporal (10016). Se reintentó la solicitud y el progreso descargado quedó guardado; vuelve a pulsar para continuar.'
+            : `Backtest OHLCV fallido: ${error.message}`;
+        }
+      } finally {
+        btnScalpCandleBacktest.disabled = false;
+        btnScalpCandleBacktest.textContent = 'Validar velas OHLCV directo';
       }
     });
   }

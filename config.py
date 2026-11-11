@@ -84,6 +84,9 @@ class ScalpingConfig:
     signal_persistence_seconds: int = 3
     max_snapshot_gap_seconds: float = 5.0
     minimum_snapshot_coverage: float = 0.80
+    candle_backtest_lookback_days: int = 30
+    min_candle_training_bars: int = 300
+    candle_cache_path: str = "data/bybit_klines_cache"
 
 
 @dataclass

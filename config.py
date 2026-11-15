@@ -71,6 +71,8 @@ class DataCaptureConfig:
     sample_interval_seconds: int = 1
     label_horizons_seconds: Tuple[int, ...] = (5, 30, 60, 300, 600, 900)
     label_min_move_bps: float = 1.0
+    max_database_size_bytes: int = 1024 * 1024 * 1024
+    database_retention_target_fraction: float = 0.90
 
 
 @dataclass

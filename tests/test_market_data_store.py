@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 from src.core.market_data_store import MarketDataStore
 
@@ -123,4 +124,83 @@ def test_store_migrates_existing_database_and_adds_scalping_horizons(tmp_path):
     assert rows[1][0] == "Bybit-Linear"
     assert rows[1][1] == (70.0 / 70_000.0) * 10_000
     assert rows[1][2] == (140.0 / 70_000.0) * 10_000
+    store.close()
+
+
+def test_store_prunes_oldest_observations_to_keep_database_under_limit(tmp_path):
+    database_path = tmp_path / "bounded.sqlite3"
+    maximum_size = 180_000
+    store = MarketDataStore(
+        database_path,
+        (5,),
+        1.0,
+        max_database_size_bytes=maximum_size,
+        retention_target_fraction=0.75,
+    )
+    store.initialize()
+    large_features = {"payload": "x" * 8_000}
+
+    for index in range(40):
+        store.record_observation(
+            observed_at_ms=index * 1000,
+            symbol="BTCUSDT",
+            price=70_000.0,
+            cvd_usd=1_000.0,
+            features=large_features,
+            heuristic_scores={},
+            configuration={"version": 1},
+        )
+
+    retained = store._connection().execute(
+        "SELECT observed_at_ms FROM market_observations ORDER BY observed_at_ms"
+    ).fetchall()
+    orphaned_configurations = store._connection().execute(
+        """
+        SELECT COUNT(*) FROM configuration_snapshots
+        WHERE NOT EXISTS (
+            SELECT 1 FROM market_observations
+            WHERE market_observations.configuration_id = configuration_snapshots.id
+        )
+        """
+    ).fetchone()[0]
+
+    assert 0 < len(retained) < 40
+    assert retained[-1][0] == 39_000
+    assert store.storage_size_bytes() <= maximum_size
+    assert orphaned_configurations == 0
+    store.close()
+
+
+def test_store_enforces_limit_when_opening_existing_database(tmp_path):
+    database_path = tmp_path / "existing-bounded.sqlite3"
+    store = MarketDataStore(database_path, (5,), 1.0)
+    store.initialize()
+    large_features = {"payload": "x" * 8_000}
+    for index in range(20):
+        store.record_observation(
+            observed_at_ms=index * 1000,
+            symbol="BTCUSDT",
+            price=70_000.0,
+            cvd_usd=1_000.0,
+            features=large_features,
+            heuristic_scores={},
+            configuration={},
+        )
+    store.close()
+    actual_size = database_path.stat().st_size
+    store = MarketDataStore(
+        database_path,
+        (5,),
+        1.0,
+        max_database_size_bytes=max(150_000, actual_size // 2),
+        retention_target_fraction=0.75,
+    )
+
+    store.initialize()
+
+    assert store.storage_size_bytes() <= store.max_database_size_bytes
+    assert store.observation_count() < 20
+    assert store._connection().execute(
+        "SELECT MAX(observed_at_ms) FROM market_observations"
+    ).fetchone()[0] == 19_000
     store.close()

@@ -196,7 +196,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (dataStatusElement && scalping.observations !== undefined) {
       const required = scalping.minimum_observations || scalping.minimum_training_observations;
       const hmmCount = Number(scalping.hmm_snapshot_count || 0).toLocaleString('es-ES');
-      dataStatusElement.textContent = `Histórico ${scalping.source}: ${Number(scalping.observations).toLocaleString('es-ES')} / ${Number(required).toLocaleString('es-ES')} snapshots (${Number(scalping.minimum_training_observations || required).toLocaleString('es-ES')} para entrenamiento) · ${hmmCount} con estado HMM-4 · Últimas 24 h: cobertura ${Number(scalping.recent_snapshot_coverage_pct || 0)}%, ${Number(scalping.recent_observations || 0).toLocaleString('es-ES')} snapshots, hueco máximo ${Number(scalping.recent_maximum_snapshot_gap_seconds || 0)} s.`;
+      const databaseSizeMb = (Number(scalping.database_size_bytes || 0) / (1024 * 1024)).toLocaleString('es-ES', { maximumFractionDigits: 1 });
+      const databaseLimitMb = (Number(scalping.database_max_size_bytes || 0) / (1024 * 1024)).toLocaleString('es-ES', { maximumFractionDigits: 0 });
+      dataStatusElement.textContent = `Histórico ${scalping.source}: ${Number(scalping.observations).toLocaleString('es-ES')} / ${Number(required).toLocaleString('es-ES')} snapshots (${Number(scalping.minimum_training_observations || required).toLocaleString('es-ES')} para entrenamiento) · DB ${databaseSizeMb}/${databaseLimitMb} MB · ${hmmCount} con estado HMM-4 · Últimas 24 h: cobertura ${Number(scalping.recent_snapshot_coverage_pct || 0)}%, ${Number(scalping.recent_observations || 0).toLocaleString('es-ES')} snapshots, hueco máximo ${Number(scalping.recent_maximum_snapshot_gap_seconds || 0)} s.`;
     }
   }
 

@@ -52,6 +52,8 @@ market_data_store = MarketDataStore(
     database_path,
     CONFIG.data_capture.label_horizons_seconds,
     CONFIG.data_capture.label_min_move_bps,
+    max_database_size_bytes=CONFIG.data_capture.max_database_size_bytes,
+    retention_target_fraction=CONFIG.data_capture.database_retention_target_fraction,
 )
 scalping_engine = ScalpingEngine(database_path, CONFIG.scalping)
 candle_backtest_engine = CandleBacktestEngine(CONFIG.scalping)
@@ -445,6 +447,8 @@ async def get_scalping_status():
         "recent_window_hours": 24,
         "minimum_training_observations": CONFIG.scalping.min_training_observations,
         "minimum_observations": scalping_engine.status()["minimum_observations"],
+        "database_size_bytes": market_data_store.storage_size_bytes(),
+        "database_max_size_bytes": CONFIG.data_capture.max_database_size_bytes,
         "max_snapshot_gap_seconds": CONFIG.scalping.max_snapshot_gap_seconds,
         "minimum_snapshot_coverage": CONFIG.scalping.minimum_snapshot_coverage,
         "strategies": STRATEGIES,
@@ -577,6 +581,8 @@ async def get_status():
             if last_capture_at_ms else None
         ),
         "stored_observations": market_data_store.observation_count() if market_data_store.connection is not None else None,
+        "database_size_bytes": market_data_store.storage_size_bytes(),
+        "database_max_size_bytes": CONFIG.data_capture.max_database_size_bytes,
         "database": "SQLite",
         "connected_clients": len(active_websockets),
         "total_aggregated_trades": trade_counter

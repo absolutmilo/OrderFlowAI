@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import math
+import os
 import sqlite3
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -14,17 +16,26 @@ class MarketDataStore:
         label_horizons_seconds: Tuple[int, ...],
         min_move_bps: float,
         label_tolerance_seconds: int = 2,
+        max_database_size_bytes: int = 1024 * 1024 * 1024,
+        retention_target_fraction: float = 0.90,
     ):
+        if max_database_size_bytes <= 0:
+            raise ValueError("The maximum database size must be greater than zero.")
+        if not 0 < retention_target_fraction < 1:
+            raise ValueError("The database retention target must be between zero and one.")
         self.database_path = database_path
         self.label_horizons_seconds = label_horizons_seconds
         self.min_move_bps = min_move_bps
         self.label_tolerance_seconds = label_tolerance_seconds
+        self.max_database_size_bytes = max_database_size_bytes
+        self.retention_target_fraction = retention_target_fraction
         self.connection: Optional[sqlite3.Connection] = None
 
     def initialize(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.database_path)
+        self.connection = sqlite3.connect(self.database_path, timeout=30)
         self.connection.execute("PRAGMA journal_mode=WAL")
+        self.connection.execute("PRAGMA wal_autocheckpoint=1000")
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS configuration_snapshots (
@@ -80,6 +91,7 @@ class MarketDataStore:
             "ON market_observations(market_source, observed_at_ms)"
         )
         self.connection.commit()
+        self._enforce_size_limit()
 
     def record_observation(
         self,
@@ -92,6 +104,13 @@ class MarketDataStore:
         configuration: Dict[str, object],
         market_source: str = "legacy_combined",
     ) -> None:
+        headroom_bytes = min(
+            16 * 1024 * 1024,
+            int(self.max_database_size_bytes * 0.1),
+        )
+        if self.storage_size_bytes() > self.max_database_size_bytes - headroom_bytes:
+            self._enforce_size_limit(force=True)
+
         connection = self._connection()
         config_json = json.dumps(configuration, sort_keys=True, separators=(",", ":"))
         config_hash = hashlib.sha256(config_json.encode("utf-8")).hexdigest()
@@ -137,6 +156,7 @@ class MarketDataStore:
                 f"INSERT INTO market_observations ({', '.join(columns)}) VALUES ({placeholders})",
                 values,
             )
+        self._enforce_size_limit()
 
     def _resolve_due_labels(
         self,
@@ -198,6 +218,81 @@ class MarketDataStore:
     def observation_count(self) -> int:
         row = self._connection().execute("SELECT COUNT(*) FROM market_observations").fetchone()
         return int(row[0])
+
+    def storage_size_bytes(self) -> int:
+        return sum(
+            os.path.getsize(path)
+            for path in (
+                self.database_path,
+                Path(f"{self.database_path}-wal"),
+                Path(f"{self.database_path}-shm"),
+            )
+            if path.exists()
+        )
+
+    def _enforce_size_limit(self, force: bool = False) -> None:
+        connection = self._connection()
+        target_size_bytes = int(
+            self.max_database_size_bytes * self.retention_target_fraction
+        )
+        trigger_size_bytes = (
+            target_size_bytes if force else self.max_database_size_bytes
+        )
+        if self.storage_size_bytes() <= trigger_size_bytes:
+            return
+
+        while self.storage_size_bytes() > target_size_bytes:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM market_observations"
+            ).fetchone()
+            observation_count = int(row[0])
+            if observation_count <= 1:
+                raise sqlite3.DatabaseError(
+                    "SQLite storage exceeds its configured size limit, and no market "
+                    "observations can be pruned without removing the latest record."
+                )
+
+            current_size = max(1, self.storage_size_bytes())
+            estimated_delete_count = max(
+                1,
+                math.ceil(
+                    observation_count
+                    * (current_size - target_size_bytes)
+                    / current_size
+                ),
+            )
+            delete_count = min(observation_count - 1, estimated_delete_count)
+            with connection:
+                connection.execute(
+                    """
+                    DELETE FROM market_observations
+                    WHERE id IN (
+                        SELECT id FROM market_observations
+                        ORDER BY observed_at_ms ASC, id ASC
+                        LIMIT ?
+                    )
+                    """,
+                    (delete_count,),
+                )
+                connection.execute(
+                    """
+                    DELETE FROM configuration_snapshots
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM market_observations
+                        WHERE market_observations.configuration_id =
+                              configuration_snapshots.id
+                    )
+                    """
+                )
+
+            checkpoint = connection.execute(
+                "PRAGMA wal_checkpoint(TRUNCATE)"
+            ).fetchone()
+            if checkpoint is not None and checkpoint[0] != 0:
+                raise sqlite3.OperationalError(
+                    "Could not checkpoint SQLite before enforcing the storage limit."
+                )
+            connection.execute("VACUUM")
 
     def close(self) -> None:
         if self.connection is not None:

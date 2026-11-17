@@ -73,6 +73,57 @@ def test_store_marks_small_moves_neutral(tmp_path):
     store.close()
 
 
+def test_trade_profile_aggregates_buy_sell_delta_and_session_vwap(tmp_path):
+    store = MarketDataStore(tmp_path / "profile.sqlite3", (5,), 1.0)
+    store.initialize()
+    store.record_profile_trade(10_000, "BTCUSDT", "Bybit-Linear", 100.0, 2.0, "BUY")
+    store.record_profile_trade(20_000, "BTCUSDT", "Bybit-Linear", 100.0, 1.0, "SELL")
+    store.record_profile_trade(70_000, "BTCUSDT", "Bybit-Linear", 101.0, 1.0, "SELL")
+    store.record_profile_trade(30_000, "BTCUSDT", "Binance-Spot", 99.0, 10.0, "BUY")
+    store.record_observation(
+        60_000, "BTCUSDT", 101.0, 0.0, {}, {}, {},
+        market_source="Bybit-Linear",
+    )
+
+    profile = store.get_orderflow_profile(
+        "BTCUSDT",
+        "Bybit-Linear",
+        profile_start_ms=0,
+        session_start_ms=0,
+        end_ms=120_000,
+    )
+
+    assert profile["levels"] == [
+        {
+            "price": 100.0,
+            "buy_volume_btc": 2.0,
+            "sell_volume_btc": 1.0,
+            "volume_btc": 3.0,
+            "buy_volume_usd": 200.0,
+            "sell_volume_usd": 100.0,
+            "delta_usd": 100.0,
+            "volume_usd": 300.0,
+        },
+        {
+            "price": 101.0,
+            "buy_volume_btc": 0.0,
+            "sell_volume_btc": 1.0,
+            "volume_btc": 1.0,
+            "buy_volume_usd": 0.0,
+            "sell_volume_usd": 101.0,
+            "delta_usd": -101.0,
+            "volume_usd": 101.0,
+        },
+    ]
+    assert profile["session_volume_btc"] == 4.0
+    assert profile["session_volume_usd"] == 401.0
+    assert profile["session_vwap"] == 401.0 / 4.0
+    assert profile["current_price"] == 101.0
+    assert profile["profile_bucket_count"] == 2
+    assert profile["session_bucket_count"] == 2
+    store.close()
+
+
 def test_store_migrates_existing_database_and_adds_scalping_horizons(tmp_path):
     database_path = tmp_path / "existing.sqlite3"
     old_store = MarketDataStore(database_path, (5,), 1.0)

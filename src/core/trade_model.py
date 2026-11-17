@@ -117,7 +117,7 @@ class ClassificationProbabilities:
 
 @dataclass
 class OrderFlowMetrics:
-    """Current rolling metrics calculated from the tape."""
+    """Current metrics calculated over one fixed event-time window."""
     current_price: float
     cvd_usd: float              # Cumulative Volume Delta (USD) in current window
     cvd_btc: float              # Cumulative Volume Delta (BTC)
@@ -127,6 +127,8 @@ class OrderFlowMetrics:
     volume_per_second_usd: float
     price_delta_bps: float
     inter_arrival_cv: float     # Coefficient of variation of trade intervals
+    window_seconds: int = 5
+    event_count: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -139,4 +141,6 @@ class OrderFlowMetrics:
             "volume_per_second_usd": round(self.volume_per_second_usd, 2),
             "price_delta_bps": round(self.price_delta_bps, 2),
             "inter_arrival_cv": round(self.inter_arrival_cv, 3),
+            "window_seconds": self.window_seconds,
+            "event_count": self.event_count,
         }

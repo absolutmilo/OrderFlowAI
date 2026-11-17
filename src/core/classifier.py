@@ -24,16 +24,37 @@ from config import CONFIG
 logger = logging.getLogger("OrderFlowAI.Classifier")
 
 
+class OutOfOrderTradeError(ValueError):
+    """Raised when an event would violate a classifier's event-time ordering."""
+
+
 class MicrostructureClassifier:
     def __init__(
         self,
-        window_size: int = CONFIG.classifier.rolling_window_trades,
         warmup_trades: int = CONFIG.classifier.warmup_trades,
-        inference_mode: str = getattr(CONFIG.classifier, "default_inference_mode", "model")
+        inference_mode: str = getattr(CONFIG.classifier, "default_inference_mode", "model"),
+        stream_identity: Optional[Tuple[str, str]] = None,
     ):
-        self.window_size = window_size
         self.warmup_trades = warmup_trades
-        self.trades: Deque[AggregatedTrade] = deque(maxlen=window_size)
+        self.feature_windows_seconds = tuple(CONFIG.classifier.feature_windows_seconds)
+        if (
+            len(self.feature_windows_seconds) < 3
+            or any(window <= 0 for window in self.feature_windows_seconds)
+            or tuple(sorted(set(self.feature_windows_seconds))) != self.feature_windows_seconds
+        ):
+            raise ValueError(
+                "Se requieren al menos tres ventanas positivas, únicas y ascendentes."
+            )
+        if CONFIG.classifier.primary_feature_window_seconds not in self.feature_windows_seconds:
+            raise ValueError("La ventana primaria debe estar incluida en feature_windows_seconds.")
+        self.primary_feature_window_seconds = CONFIG.classifier.primary_feature_window_seconds
+        self.activity_window_seconds = self.feature_windows_seconds[0]
+        self.absorption_window_seconds = self.feature_windows_seconds[1]
+        self.rolling_window_seconds = self.feature_windows_seconds[-1]
+        self.stream_identity = stream_identity
+        self.trades: Deque[AggregatedTrade] = deque()
+        self._stream_started_at_ms: Optional[int] = None
+        self._last_timestamp_ms: Optional[int] = None
         if inference_mode not in {"heuristic", "model"}:
             raise ValueError(f"Modo de inferencia no válido: {inference_mode}")
         self.inference_mode = inference_mode
@@ -51,7 +72,17 @@ class MicrostructureClassifier:
         model_path = Path(__file__).resolve().parents[2] / model_rel_path
         if model_path.exists():
             try:
-                self.hmm_model = OnlineGaussianHMM.load(model_path)
+                model = OnlineGaussianHMM.load(model_path)
+                if model.feature_schema_version != CONFIG.classifier.feature_schema_version:
+                    logger.warning(
+                        "El artefacto HMM usa un esquema de features incompatible (%s); "
+                        "se requiere reentrenarlo para %s.",
+                        model.feature_schema_version,
+                        CONFIG.classifier.feature_schema_version,
+                    )
+                    self.hmm_model = None
+                    return
+                self.hmm_model = model
                 logger.info(f"Modelo Gaussian HMM cargado exitosamente desde {model_path}.")
             except Exception as e:
                 logger.warning(f"No se pudo cargar el modelo HMM ({e}); usando fallback heurístico.")
@@ -84,17 +115,68 @@ class MicrostructureClassifier:
         return self.set_inference_mode(new_mode)
 
     def add_trade(self, trade: AggregatedTrade):
-        """Pushes a new trade into the rolling window."""
+        """Adds an event to this stream's fixed event-time history."""
+        identity = (trade.exchange, trade.symbol)
+        if self.stream_identity is None:
+            self.stream_identity = identity
+        elif identity != self.stream_identity:
+            raise ValueError(
+                f"El clasificador de {self.stream_identity} no acepta eventos de {identity}."
+            )
+        timestamp_ms = trade.last_timestamp_ms
+        if self._last_timestamp_ms is not None and timestamp_ms < self._last_timestamp_ms:
+            raise OutOfOrderTradeError(
+                "Los eventos del clasificador deben llegar en orden temporal."
+            )
+        if (
+            self._last_timestamp_ms is not None
+            and timestamp_ms - self._last_timestamp_ms
+            > CONFIG.classifier.max_trade_gap_seconds * 1000
+        ):
+            self.trades.clear()
+            self._stream_started_at_ms = timestamp_ms
+            if self.hmm_model is not None:
+                self.hmm_model.reset()
+        elif self._stream_started_at_ms is None:
+            self._stream_started_at_ms = timestamp_ms
+
         self.trades.append(trade)
+        self._last_timestamp_ms = timestamp_ms
+        cutoff_ms = timestamp_ms - self.rolling_window_seconds * 1000
+        while self.trades and self.trades[0].last_timestamp_ms <= cutoff_ms:
+            self.trades.popleft()
 
     def is_warmed_up(self) -> bool:
-        return len(self.trades) >= self.warmup_trades
+        return (
+            len(self.trades) >= self.warmup_trades
+            and self._stream_started_at_ms is not None
+            and self._last_timestamp_ms is not None
+            and self._last_timestamp_ms - self._stream_started_at_ms
+            >= self.rolling_window_seconds * 1000
+        )
 
-    def get_current_metrics(self) -> Optional[OrderFlowMetrics]:
-        if not self.trades:
+    def get_window_trades(self, window_seconds: int) -> List[AggregatedTrade]:
+        if window_seconds not in self.feature_windows_seconds:
+            raise ValueError(f"Ventana de features no configurada: {window_seconds}s.")
+        if self._last_timestamp_ms is None:
+            return []
+        cutoff_ms = self._last_timestamp_ms - window_seconds * 1000
+        return [
+            trade for trade in self.trades
+            if trade.last_timestamp_ms > cutoff_ms
+        ]
+
+    def get_current_metrics(
+        self,
+        window_seconds: Optional[int] = None,
+    ) -> Optional[OrderFlowMetrics]:
+        if window_seconds is None:
+            window_seconds = self.primary_feature_window_seconds
+        trades = self.get_window_trades(window_seconds)
+        if not trades:
             return None
 
-        trades_list = list(self.trades)
+        trades_list = trades
         prices = np.array([t.price for t in trades_list], dtype=np.float64)
         sizes = np.array([t.total_size for t in trades_list], dtype=np.float64)
         usd_values = np.array([t.total_usd_value for t in trades_list], dtype=np.float64)
@@ -110,11 +192,8 @@ class MicrostructureClassifier:
         sell_btc = float(np.sum(sizes[~is_buy]))
         cvd_btc = buy_btc - sell_btc
 
-        # Time range & throughput
-        time_span_ms = max(1, times[-1] - times[0])
-        time_span_sec = time_span_ms / 1000.0
-        tps = len(trades_list) / max(0.1, time_span_sec)
-        vol_per_sec = float(np.sum(usd_values)) / max(0.1, time_span_sec)
+        tps = len(trades_list) / float(window_seconds)
+        vol_per_sec = float(np.sum(usd_values)) / float(window_seconds)
 
         # Price displacement in basis points (bps)
         current_price = float(prices[-1])
@@ -137,7 +216,9 @@ class MicrostructureClassifier:
             trades_per_second=tps,
             volume_per_second_usd=vol_per_sec,
             price_delta_bps=price_delta_bps,
-            inter_arrival_cv=inter_arrival_cv
+            inter_arrival_cv=inter_arrival_cv,
+            window_seconds=window_seconds,
+            event_count=len(trades_list),
         )
 
     def classify(self, mode: Optional[str] = None) -> ClassificationProbabilities:
@@ -145,29 +226,40 @@ class MicrostructureClassifier:
         Dispatches classification based on active inference mode (HMM model vs Heuristic).
         """
         if not self.is_warmed_up():
-            return ClassificationProbabilities(
-                algo_institutional=25.0,
-                iceberg=15.0,
-                absorption=15.0,
-                retail=45.0,
-                hft_competition=10.0,
-                breakout=10.0,
-                dominant_regime=MarketRegime.RETAIL_DOMINANT.value,
-                notes=["Calentando ventana de eventos..."]
-            )
+            return self._classify_warming_up()
 
         active_mode = mode or self.inference_mode
         if active_mode == "model" and self.hmm_model is not None:
             return self._classify_hmm()
         return self._classify_heuristic()
 
+    @staticmethod
+    def _classify_warming_up() -> ClassificationProbabilities:
+        return ClassificationProbabilities(
+            algo_institutional=25.0,
+            iceberg=15.0,
+            absorption=15.0,
+            retail=45.0,
+            hft_competition=10.0,
+            breakout=10.0,
+            dominant_regime=MarketRegime.RETAIL_DOMINANT.value,
+            notes=["Calentando ventanas temporales..."],
+        )
+
     def _classify_hmm(self) -> ClassificationProbabilities:
         """
         Calculates probabilities using the learned 4-state Gaussian Hidden Markov Model.
         Replaces static heuristic sigmoid weights with learned transition and emission matrices.
         """
-        metrics = self.get_current_metrics()
-        if metrics is None or self.hmm_model is None:
+        metrics = self.get_current_metrics(self.primary_feature_window_seconds)
+        behavior_metrics = self.get_current_metrics(self.rolling_window_seconds)
+        activity_metrics = self.get_current_metrics(self.activity_window_seconds)
+        if (
+            metrics is None
+            or behavior_metrics is None
+            or activity_metrics is None
+            or self.hmm_model is None
+        ):
             return self._classify_heuristic()
 
         inter_cv = min(5.0, max(0.1, metrics.inter_arrival_cv))
@@ -187,8 +279,8 @@ class MicrostructureClassifier:
         prob_absorption = float(alpha[2]) * 100.0
         prob_retail = float(alpha[3]) * 100.0
 
-        # Microstructural side tags
-        trades_list = list(self.trades)
+        # Side tags are calculated from the longest configured window.
+        trades_list = self.get_window_trades(self.rolling_window_seconds)
         prices = np.array([t.price for t in trades_list], dtype=np.float64)
         usd_values = np.array([t.total_usd_value for t in trades_list], dtype=np.float64)
         is_buy = np.array([t.side == TradeSide.BUY for t in trades_list])
@@ -209,13 +301,24 @@ class MicrostructureClassifier:
         else:
             absorption_side = "COMPRAS (Limit Bids absorben ventas agresivas)"
 
-        # Breakout and HFT detection (complementary signatures)
-        prob_breakout = min(95.0, (price_delta / 15.0) * 50.0 + (cvd_ratio * 45.0)) if (
-            price_delta > CONFIG.classifier.breakout_min_price_delta_bps
-            and cvd_ratio > CONFIG.classifier.breakout_min_cvd_ratio
-        ) else min(35.0, price_delta * 3.0)
+        # Activity and directional displacement use their own fixed windows.
+        behavior_price_delta = abs(behavior_metrics.price_delta_bps)
+        behavior_total_volume = max(
+            1.0,
+            behavior_metrics.buy_volume_usd + behavior_metrics.sell_volume_usd,
+        )
+        behavior_cvd_ratio = abs(behavior_metrics.cvd_usd) / behavior_total_volume
+        direction_aligned = (
+            behavior_metrics.price_delta_bps * behavior_metrics.cvd_usd > 0
+        )
+        prob_breakout = min(95.0, (behavior_price_delta / 15.0) * 50.0 + (behavior_cvd_ratio * 45.0)) if (
+            behavior_price_delta > CONFIG.classifier.breakout_min_price_delta_bps
+            and behavior_cvd_ratio > CONFIG.classifier.breakout_min_cvd_ratio
+            and direction_aligned
+        ) else min(20.0 if not direction_aligned else 35.0, behavior_price_delta * 3.0)
 
-        prob_hft = min(95.0, (tps / 90.0) * 50.0) if tps > CONFIG.classifier.hft_burst_tps_threshold else min(30.0, (tps / 60.0) * 30.0)
+        activity_tps = activity_metrics.trades_per_second
+        prob_hft = min(95.0, (activity_tps / 90.0) * 50.0) if activity_tps > CONFIG.classifier.hft_burst_tps_threshold else min(30.0, (activity_tps / 60.0) * 30.0)
 
         # Dominant state index from HMM belief
         dominant_idx = int(np.argmax(alpha))
@@ -251,18 +354,23 @@ class MicrostructureClassifier:
         """
         Original rule-based heuristic classification using static sigmoid thresholds.
         """
-        trades_list = list(self.trades)
-        prices = np.array([t.price for t in trades_list], dtype=np.float64)
-        usd_values = np.array([t.total_usd_value for t in trades_list], dtype=np.float64)
-        times = np.array([t.last_timestamp_ms for t in trades_list], dtype=np.int64)
-        is_buy = np.array([t.side == TradeSide.BUY for t in trades_list])
+        behavior_trades = self.get_window_trades(self.rolling_window_seconds)
+        absorption_metrics = self.get_current_metrics(self.absorption_window_seconds)
+        behavior_metrics = self.get_current_metrics(self.rolling_window_seconds)
+        activity_metrics = self.get_current_metrics(self.activity_window_seconds)
+        if not behavior_trades or absorption_metrics is None or behavior_metrics is None or activity_metrics is None:
+            return self._classify_warming_up()
+
+        prices = np.array([t.price for t in behavior_trades], dtype=np.float64)
+        usd_values = np.array([t.total_usd_value for t in behavior_trades], dtype=np.float64)
+        times = np.array([t.last_timestamp_ms for t in behavior_trades], dtype=np.int64)
+        is_buy = np.array([t.side == TradeSide.BUY for t in behavior_trades])
 
         total_usd = float(np.sum(usd_values))
         buy_usd = float(np.sum(usd_values[is_buy]))
         sell_usd = float(np.sum(usd_values[~is_buy]))
         cvd_usd = buy_usd - sell_usd
-        mean_price = float(np.mean(prices))
-        price_delta_bps = abs((prices[-1] - prices[0]) / max(1.0, mean_price)) * 10000.0
+        price_delta_bps = abs(behavior_metrics.price_delta_bps)
 
         notes: List[str] = []
 
@@ -284,7 +392,7 @@ class MicrostructureClassifier:
         )
         prob_algo = (0.60 * time_regularity_score + 0.40 * size_regularity_score) * 100.0
         if prob_algo > 70.0:
-            notes.append("Heurística: Cadencia temporal uniforme (TWAP/POV).")
+            notes.append("Heurística: Cadencia temporal y tamaños regulares.")
 
         # 2. Patrón: Iceberg Heurístico
         rounded_prices = np.round(prices, 1)
@@ -307,61 +415,77 @@ class MicrostructureClassifier:
             level_sells = np.sum(usd_values[(rounded_prices == max_vol_level) & (~is_buy)])
             if level_sells > level_buys:
                 iceberg_side = "COMPRADOR"
-                notes.append(f"Heurística: Iceberg Comprador en ${max_vol_level:,.1f}.")
+                notes.append(f"Heurística: Concentración ejecutada compradora en ${max_vol_level:,.1f}.")
             else:
                 iceberg_side = "VENDEDOR"
-                notes.append(f"Heurística: Iceberg Vendedor en ${max_vol_level:,.1f}.")
+                notes.append(f"Heurística: Concentración ejecutada vendedora en ${max_vol_level:,.1f}.")
             prob_iceberg = min(96.0, (level_vol_ratio * 1.8 + (level_count / 20.0)) * 70.0)
         else:
             prob_iceberg = min(50.0, (level_vol_ratio * 2.0) * 50.0)
 
-        # 3. Patrón: Absorción Heurística
+        # 3. Flujo agresivo con baja respuesta de precio, medido en 5 segundos.
         prob_absorption = 10.0
         absorption_side = None
-        cvd_ratio = abs(cvd_usd) / max(1.0, total_usd)
+        absorption_total_usd = (
+            absorption_metrics.buy_volume_usd + absorption_metrics.sell_volume_usd
+        )
+        absorption_cvd_ratio = abs(absorption_metrics.cvd_usd) / max(
+            1.0, absorption_total_usd
+        )
 
         if (
-            total_usd >= CONFIG.classifier.absorption_min_usd_vol
-            and cvd_ratio > CONFIG.classifier.absorption_min_cvd_ratio
-            and price_delta_bps < CONFIG.classifier.absorption_max_price_delta_bps
+            absorption_total_usd >= CONFIG.classifier.absorption_min_usd_vol
+            and absorption_cvd_ratio > CONFIG.classifier.absorption_min_cvd_ratio
+            and abs(absorption_metrics.price_delta_bps)
+            < CONFIG.classifier.absorption_max_price_delta_bps
         ):
-            absorption_intensity = cvd_ratio / max(0.1, price_delta_bps + 0.2)
+            absorption_intensity = absorption_cvd_ratio / max(
+                0.1, abs(absorption_metrics.price_delta_bps) + 0.2
+            )
             prob_absorption = min(95.0, 45.0 + (absorption_intensity * 25.0))
-            if cvd_usd > 0:
+            if absorption_metrics.cvd_usd > 0:
                 absorption_side = "VENTAS (Limit Asks absorben compras agresivas)"
-                notes.append("Heurística: Absorción pasiva en Ask.")
+                notes.append("Heurística: Flujo comprador con baja respuesta de precio.")
             else:
                 absorption_side = "COMPRAS (Limit Bids absorben ventas agresivas)"
-                notes.append("Heurística: Absorción pasiva en Bid.")
+                notes.append("Heurística: Flujo vendedor con baja respuesta de precio.")
         else:
-            prob_absorption = min(45.0, cvd_ratio * 60.0)
+            prob_absorption = min(45.0, absorption_cvd_ratio * 60.0)
 
-        # 4. Patrón: HFT
-        time_span_sec = max(0.05, (times[-1] - times[0]) / 1000.0)
-        tps = len(trades_list) / time_span_sec
-        side_transitions = np.sum(is_buy[:-1] != is_buy[1:])
-        transition_rate = side_transitions / max(1, len(is_buy) - 1)
+        # 4. Burst activity, measured over one second; it does not identify HFT.
+        activity_trades = self.get_window_trades(self.activity_window_seconds)
+        activity_sides = np.array(
+            [trade.side == TradeSide.BUY for trade in activity_trades],
+            dtype=bool,
+        )
+        tps = activity_metrics.trades_per_second
+        side_transitions = np.sum(activity_sides[:-1] != activity_sides[1:])
+        transition_rate = side_transitions / max(1, len(activity_sides) - 1)
 
         hft_tps_threshold = CONFIG.classifier.hft_burst_tps_threshold
         if tps > hft_tps_threshold:
             prob_hft = min(95.0, (tps / 90.0) * 50.0 + (transition_rate * 45.0))
             if prob_hft > 75.0:
-                notes.append(f"Heurística: Ráfaga HFT ({tps:.0f} TPS).")
+                notes.append(f"Heurística: Ráfaga de actividad ({tps:.0f} eventos/s).")
         else:
             prob_hft = min(35.0, (tps / max(1.0, hft_tps_threshold)) * 35.0)
 
-        # 5. Patrón: Breakout
+        # 5. Directional impulse; require price displacement and signed flow to align.
+        cvd_ratio = abs(cvd_usd) / max(1.0, total_usd)
+        direction_aligned = behavior_metrics.price_delta_bps * cvd_usd > 0
         if (
             price_delta_bps > CONFIG.classifier.breakout_min_price_delta_bps
             and cvd_ratio > CONFIG.classifier.breakout_min_cvd_ratio
+            and direction_aligned
         ):
             prob_breakout = min(94.0, (price_delta_bps / 15.0) * 50.0 + (cvd_ratio * 45.0))
-            direction = "alcista" if cvd_usd > 0 else "bajista"
-            notes.append(f"Heurística: Breakout {direction}.")
+            direction = "alcista" if behavior_metrics.price_delta_bps > 0 else "bajista"
+            notes.append(f"Heurística: Impulso direccional {direction}.")
         else:
             prob_breakout = min(
-                40.0,
-                (price_delta_bps / max(1.0, CONFIG.classifier.breakout_min_price_delta_bps)) * 30.0,
+                20.0 if not direction_aligned else 40.0,
+                (price_delta_bps / max(1.0, CONFIG.classifier.breakout_min_price_delta_bps))
+                * 30.0,
             )
 
         # 6. Patrón: Retail Dominante

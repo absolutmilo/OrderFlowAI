@@ -22,7 +22,7 @@
         <span class="ticker-value" id="btc-price">$---,--</span>
       </div>
       <div class="ticker-item">
-        <span class="ticker-label">CVD (Delta Acumulado)</span>
+        <span class="ticker-label">CVD rápido · 5 s</span>
         <span class="ticker-value" id="cvd-usd">$0.0k</span>
       </div>
       <div class="ticker-item">
@@ -168,22 +168,56 @@
           <span class="sparkline-period">Última hora</span>
         </div>
 
-        <!-- 6. CVD Delta Acumulado Timeline -->
-        <div class="prob-row cvd-style">
-          <div class="prob-header">
+        <!-- 6. Volume and CVD profile by traded price -->
+        <div class="prob-row cvd-style cvd-profile-row" aria-labelledby="cvd-profile-title">
+          <div class="cvd-profile-heading">
             <div>
-              <div class="prob-name">CVD (Delta Acumulado)</div>
-              <div class="prob-desc">Evolución de presión compradora / vendedora (convergencias e imbalances)</div>
+              <div class="prob-name" id="cvd-profile-title">Perfil de volumen y CVD por precio</div>
+              <div class="prob-desc">Volumen comprador/vendedor y delta neto en cada nivel negociado · Bybit Linear</div>
             </div>
-            <div class="prob-percent" id="prob-cvd">$0.0k</div>
+            <label class="profile-window-control" for="cvd-profile-window">
+              Ventana
+              <select id="cvd-profile-window">
+                <option value="15">15 minutos</option>
+                <option value="60" selected>1 hora</option>
+                <option value="240">4 horas</option>
+                <option value="1440">24 horas</option>
+              </select>
+            </label>
           </div>
-          <svg class="prob-sparkline" viewBox="0 0 240 44" role="img" aria-label="Historial de CVD en la última hora">
-            <path class="sparkline-grid" d="M0 11H240 M0 22H240 M0 33H240"></path>
-            <line x1="0" y1="22" x2="240" y2="22" stroke="rgba(255,255,255,0.18)" stroke-dasharray="2,2"></line>
-            <path class="sparkline-line" id="spark-cvd"></path>
-            <circle class="sparkline-dot" id="spark-dot-cvd" r="2.5"></circle>
-          </svg>
-          <span class="sparkline-period">Línea cero central · Última hora</span>
+          <div class="cvd-profile-summary">
+            <div class="profile-stat">
+              <span>Δ CVD del perfil</span>
+              <strong id="cvd-profile-delta">Esperando trades</strong>
+            </div>
+            <div class="profile-stat">
+              <span>Volumen de la ventana</span>
+              <strong id="cvd-profile-volume">--</strong>
+            </div>
+            <div class="profile-stat">
+              <span>VWAP sesión UTC</span>
+              <strong id="cvd-profile-vwap">--</strong>
+              <small id="cvd-profile-vwap-distance">Acumulando datos desde las 00:00 UTC</small>
+            </div>
+          </div>
+          <div class="profile-legend" aria-hidden="true">
+            <span><i class="profile-buy-key"></i>Compras agresivas</span>
+            <span><i class="profile-sell-key"></i>Ventas agresivas</span>
+            <span><i class="profile-delta-key"></i>Δ CVD por nivel</span>
+          </div>
+          <div class="cvd-profile-table" role="table" aria-label="Perfil de volumen y delta acumulado por nivel de precio">
+            <div class="cvd-profile-table-header" role="row">
+              <span role="columnheader">Precio</span>
+              <span role="columnheader">Volumen · compra / venta</span>
+              <span role="columnheader">Delta CVD</span>
+            </div>
+            <div class="cvd-profile-rows" id="cvd-profile-rows" role="rowgroup">
+              <p class="profile-empty">Esperando trades de Bybit Linear...</p>
+            </div>
+          </div>
+          <p class="cvd-profile-status" id="cvd-profile-status" role="status" aria-live="polite">
+            El perfil se actualiza con el flujo en vivo; la cobertura se indicará al llegar datos.
+          </p>
         </div>
       </div>
 

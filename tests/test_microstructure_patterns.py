@@ -30,10 +30,12 @@ def test_microstructure_pattern_engine_iceberg_defense_buy():
 
     signal = engine.evaluate_pattern(regime, features)
     assert signal is not None
-    assert signal.pattern_name == "ICEBERG_DEFENSE_BUY"
+    assert signal.pattern_name == "PASSIVE_BUYING_CANDIDATE"
     assert signal.direction == 1
-    assert signal.recommended_horizon_seconds == 60  # Scalp rápido under low volatility
-    assert signal.probability_win > 55.0
+    assert signal.recommended_horizon_seconds is None
+    assert signal.probability_win is None
+    assert signal.expectancy_bps is None
+    assert signal.confidence is None
 
 
 def test_microstructure_pattern_engine_iceberg_defense_sell():
@@ -52,9 +54,9 @@ def test_microstructure_pattern_engine_iceberg_defense_sell():
 
     signal = engine.evaluate_pattern(regime, features)
     assert signal is not None
-    assert signal.pattern_name == "ICEBERG_DEFENSE_SELL"
+    assert signal.pattern_name == "PASSIVE_SELLING_CANDIDATE"
     assert signal.direction == -1
-    assert signal.recommended_horizon_seconds == 300  # Intradía corto (5 min)
+    assert signal.recommended_horizon_seconds is None
 
 
 def test_microstructure_pattern_engine_absorption_exhaustion_long():
@@ -78,8 +80,10 @@ def test_microstructure_pattern_engine_absorption_exhaustion_long():
         recent_momentums_bps=[0.4],
     )
     assert signal is not None
-    assert signal.pattern_name == "ABSORPTION_EXHAUSTION_LONG"
+    assert signal.pattern_name == "LOW_PRICE_RESPONSE_REVERSAL_LONG"
     assert signal.direction == 1
+    assert signal.probability_win is None
+    assert signal.expectancy_bps is None
 
 
 def test_check_adverse_wall_detection():
@@ -92,7 +96,7 @@ def test_check_adverse_wall_detection():
 
     assert alert.is_adverse is True
     assert alert.opposing_direction == -1
-    assert "Muro de venta institucional" in alert.reason
+    assert "Estado opuesto inferido" in alert.reason
 
     # In SHORT position, buyers build a persistent adverse wall
     short_dir = -1
@@ -101,7 +105,7 @@ def test_check_adverse_wall_detection():
 
     assert alert.is_adverse is True
     assert alert.opposing_direction == 1
-    assert "Muro de compra pasivo" in alert.reason
+    assert "Estado opuesto inferido" in alert.reason
 
     # No adverse wall if regime is mixed or aligned
     neutral_regimes = ["ABSORPTION_BUY", "RETAIL_DOMINANT", "ALGO_INSTITUTIONAL"]

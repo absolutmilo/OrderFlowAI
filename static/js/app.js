@@ -42,8 +42,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const elProbHft = document.getElementById('prob-hft');
   const elSparkHft = document.getElementById('spark-hft');
 
-  const elProbCvd = document.getElementById('prob-cvd');
-  const elSparkCvd = document.getElementById('spark-cvd');
+  const elCvdProfileWindow = document.getElementById('cvd-profile-window');
+  const elCvdProfileRows = document.getElementById('cvd-profile-rows');
+  const elCvdProfileDelta = document.getElementById('cvd-profile-delta');
+  const elCvdProfileVolume = document.getElementById('cvd-profile-volume');
+  const elCvdProfileVwap = document.getElementById('cvd-profile-vwap');
+  const elCvdProfileVwapDistance = document.getElementById('cvd-profile-vwap-distance');
+  const elCvdProfileStatus = document.getElementById('cvd-profile-status');
 
   // Audio Controls
   const btnToggleAudio = document.getElementById('btn-toggle-audio');
@@ -62,12 +67,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const PROBABILITY_WINDOW_MS = 60 * 60 * 1000;
   const PROBABILITY_SAMPLE_MS = 5 * 1000;
   const PROBABILITY_SERIES = {
-    algo_institutional: { path: elSparkAlgo, dot: document.getElementById('spark-dot-algo'), isCvd: false },
-    iceberg: { path: elSparkIceberg, dot: document.getElementById('spark-dot-iceberg'), isCvd: false },
-    absorption: { path: elSparkAbsorption, dot: document.getElementById('spark-dot-absorption'), isCvd: false },
-    retail: { path: elSparkRetail, dot: document.getElementById('spark-dot-retail'), isCvd: false },
-    hft_competition: { path: elSparkHft, dot: document.getElementById('spark-dot-hft'), isCvd: false },
-    cvd_usd: { path: elSparkCvd, dot: document.getElementById('spark-dot-cvd'), isCvd: true, elVal: elProbCvd, row: document.querySelector('.cvd-style') },
+    algo_institutional: { path: elSparkAlgo, dot: document.getElementById('spark-dot-algo') },
+    iceberg: { path: elSparkIceberg, dot: document.getElementById('spark-dot-iceberg') },
+    absorption: { path: elSparkAbsorption, dot: document.getElementById('spark-dot-absorption') },
+    retail: { path: elSparkRetail, dot: document.getElementById('spark-dot-retail') },
+    hft_competition: { path: elSparkHft, dot: document.getElementById('spark-dot-hft') },
   };
   const probabilityHistory = Object.fromEntries(
     Object.keys(PROBABILITY_SERIES).map((key) => [key, []])
@@ -78,6 +82,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let probabilityMode = null;
   let lastProbabilitySampleBucket = -1;
   let historyRequestId = 0;
+  let profileRequestId = 0;
+  let latestMarketPrice = null;
   let whaleQueueSize = 0;
 
   btnDetectorInfo.addEventListener('click', () => infoDialog.showModal());
@@ -227,7 +233,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const parameterDescription = candleSource
         ? `EMA ${parameters.ema_fast_period}/${parameters.ema_slow_period}, volumen ${parameters.volume_lookback_bars} velas, horizonte ${parameters.holding_period_bars} velas`
         : `SL ${parameters.stop_atr_multiple} ATR, TP ${parameters.target_atr_multiple} ATR`;
-      metricsElement.textContent = `Estrategia: ${backtest.strategy_name} · ${backtest.timeframe_minutes} min · dirección ${backtest.direction_mode_name || 'Original'} · ${sampleDescription}. Entrenamiento (${training.trade_count} ops): bruto ${training.gross_expectancy_bps} bps/operación, neto ${training.expectancy_bps} bps/operación. Validación (${validation.trade_count} ops): bruto ${validation.gross_expectancy_bps} bps/operación, neto ${validation.expectancy_bps} bps/operación · aciertos netos ${validation.win_rate_pct}% · PF ${validation.profit_factor} · DD ${validation.max_drawdown_bps} bps · costos ${validation.total_costs_bps} bps. ${parameterDescription}.`;
+      const lowerBound = validation.expectancy_lower_95_bps;
+      const lowerBoundText = lowerBound === null || lowerBound === undefined ? 'n/d' : `${lowerBound}`;
+      metricsElement.textContent = `Estrategia: ${backtest.strategy_name} · ${backtest.timeframe_minutes} min · dirección ${backtest.direction_mode_name || 'Original'} · ${sampleDescription}. Entrenamiento (${training.trade_count} ops): bruto ${training.gross_expectancy_bps} bps/operación, neto ${training.expectancy_bps} bps/operación. Validación (${validation.trade_count} ops; mínimo ${backtest.minimum_validation_trades}): bruto ${validation.gross_expectancy_bps} bps/operación, neto ${validation.expectancy_bps} bps/operación · límite inferior HAC 95% ${lowerBoundText} bps/op · aciertos netos ${validation.win_rate_pct}% · PF ${validation.profit_factor} · DD ${validation.max_drawdown_bps} bps · costos ${validation.total_costs_bps} bps. ${parameterDescription}.`;
       if (breakdownElement && validation.by_direction) {
         const long = validation.by_direction.LONG;
         const short = validation.by_direction.SHORT;
@@ -343,6 +351,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  if (elCvdProfileWindow) {
+    elCvdProfileWindow.addEventListener('change', loadOrderFlowProfile);
+    loadOrderFlowProfile();
+    window.setInterval(loadOrderFlowProfile, 5000);
+  }
+
   loadScalpingStatus();
 
   function connectWebSocket() {
@@ -365,17 +379,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (data.type === 'order_flow_tick') {
           handleTradeTick(data.trade);
-          const cvdVal = data.metrics ? data.metrics.cvd_usd : null;
-          updateProbabilities(data.probabilities, cvdVal);
-          if (data.metrics) updateMetrics(data.metrics);
-          if (data.exchange_stats) updateExchangeStats(data.exchange_stats);
-          updateSystemMode(data.inference_mode, data.data_capture_status, data.detector_config);
+          if (data.exchange_stats) {
+            updateExchangeStats(
+              data.exchange_stats,
+              data.primary_market_source,
+              data.feature_windows_seconds
+            );
+          }
+          if (data.market_source === data.primary_market_source) {
+            updateProbabilities(data.probabilities);
+            if (data.metrics) updateMetrics(data.metrics);
+            updateSystemMode(data.inference_mode, data.data_capture_status, data.detector_config);
+          }
           renderScalpingSignal(data.scalping);
         } else if (data.type === 'snapshot') {
-          const cvdVal = data.metrics ? data.metrics.cvd_usd : null;
-          updateProbabilities(data.probabilities, cvdVal);
+          updateProbabilities(data.probabilities);
           if (data.metrics) updateMetrics(data.metrics);
-          if (data.exchange_stats) updateExchangeStats(data.exchange_stats);
+          if (data.exchange_stats) {
+            updateExchangeStats(
+              data.exchange_stats,
+              data.primary_market_source,
+              data.feature_windows_seconds
+            );
+          }
           updateSystemMode(data.inference_mode, data.data_capture_status, data.detector_config);
           renderScalpingSignal(data.scalping);
         } else if (data.type === 'scalping_backtest') {
@@ -407,9 +433,11 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
-  function updateExchangeStats(stats) {
+  function updateExchangeStats(stats, primaryMarketSource, featureWindows) {
     if (!stats || !elFeedStats) return;
-    elFeedStats.textContent = `BINANCE: ${stats.Binance || 0} | BYBIT: ${stats.Bybit || 0}`;
+    const windows = Array.isArray(featureWindows) ? featureWindows.join('/') : '';
+    const windowLabel = windows ? `(${windows}s)` : '';
+    elFeedStats.textContent = `BINANCE: ${stats.Binance || 0} | BYBIT: ${stats.Bybit || 0} · Clasificador: ${primaryMarketSource || '—'} ${windowLabel}`;
   }
 
   function updateSystemMode(mode, captureStatus, detectorConfig) {
@@ -465,6 +493,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function updateMetrics(metrics) {
     if (!metrics) return;
+    latestMarketPrice = Number(metrics.current_price);
     elBtcPrice.textContent = `$${metrics.current_price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
     const cvdVal = metrics.cvd_usd;
@@ -475,7 +504,251 @@ document.addEventListener('DOMContentLoaded', () => {
     elTps.textContent = `${metrics.trades_per_second.toFixed(1)} /s`;
   }
 
-  function updateProbabilities(probs, cvdUsd = null) {
+  function formatProfilePrice(value) {
+    return `$${value.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+  }
+
+  function formatProfileUsd(value, signed = false) {
+    const absolute = Math.abs(value);
+    const amount = absolute >= 1_000_000
+      ? `${(absolute / 1_000_000).toFixed(1)}M`
+      : absolute >= 1_000
+        ? `${(absolute / 1_000).toFixed(1)}k`
+        : absolute.toFixed(0);
+    const sign = signed ? (value >= 0 ? '+' : '-') : (value < 0 ? '-' : '');
+    return `${sign}$${amount}`;
+  }
+
+  function formatProfileTime(timestamp) {
+    if (!Number.isFinite(Number(timestamp))) return '';
+    return new Date(Number(timestamp)).toLocaleTimeString('es-ES', {
+      timeZone: 'UTC',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  function adaptivePriceStep(range) {
+    const rawStep = Math.max(0.1, range / 24);
+    const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+    const normalized = rawStep / magnitude;
+    const factor = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+    return Math.max(0.1, factor * magnitude);
+  }
+
+  function addProfileCell(row, className, text) {
+    const cell = document.createElement('span');
+    cell.className = className;
+    cell.textContent = text;
+    row.appendChild(cell);
+    return cell;
+  }
+
+  function renderOrderFlowProfile(data) {
+    if (!elCvdProfileRows || !elCvdProfileStatus) return;
+    const levels = (data.levels || []).filter((level) =>
+      Number.isFinite(Number(level.price))
+      && Number.isFinite(Number(level.buy_volume_usd))
+      && Number.isFinite(Number(level.sell_volume_usd))
+      && Number.isFinite(Number(level.delta_usd))
+    );
+    const totalDelta = levels.reduce((total, level) => total + Number(level.delta_usd), 0);
+    const totalVolume = levels.reduce((total, level) =>
+      total + Number(level.buy_volume_usd) + Number(level.sell_volume_usd), 0);
+
+    if (elCvdProfileDelta) {
+      elCvdProfileDelta.textContent = levels.length
+        ? formatProfileUsd(totalDelta, true)
+        : 'Esperando trades';
+      elCvdProfileDelta.classList.toggle('positive', totalDelta >= 0 && levels.length > 0);
+      elCvdProfileDelta.classList.toggle('negative', totalDelta < 0);
+    }
+    if (elCvdProfileVolume) {
+      elCvdProfileVolume.textContent = levels.length ? formatProfileUsd(totalVolume) : '--';
+    }
+
+    let adaptiveBandWidth = null;
+    const currentPriceFromServer = Number(data.current_price);
+    const currentPrice = Number.isFinite(currentPriceFromServer) && currentPriceFromServer > 0
+      ? currentPriceFromServer
+      : latestMarketPrice;
+    const hasCurrentPrice = Number.isFinite(currentPrice) && currentPrice > 0;
+    const vwap = Number(data.session_vwap);
+    const hasVwap = Number.isFinite(vwap) && vwap > 0;
+    if (elCvdProfileVwap) {
+      elCvdProfileVwap.textContent = hasVwap ? formatProfilePrice(vwap) : 'Esperando trades';
+    }
+    if (elCvdProfileVwapDistance) {
+      if (hasVwap && hasCurrentPrice) {
+        const distanceBps = ((currentPrice - vwap) / vwap) * 10_000;
+        const relation = distanceBps >= 0 ? 'sobre' : 'bajo';
+        elCvdProfileVwapDistance.textContent =
+          `Precio ${Math.abs(distanceBps).toFixed(1)} bps ${relation} el VWAP`;
+      } else {
+        elCvdProfileVwapDistance.textContent = 'VWAP diario anclado a las 00:00 UTC';
+      }
+    }
+
+    if (!levels.length) {
+      elCvdProfileRows.replaceChildren();
+      const empty = document.createElement('p');
+      empty.className = 'profile-empty';
+      empty.textContent = 'Esperando trades de Bybit Linear para construir el perfil...';
+      elCvdProfileRows.appendChild(empty);
+    } else {
+      const priceBounds = levels.reduce((bounds, level) => ({
+        min: Math.min(bounds.min, Number(level.price)),
+        max: Math.max(bounds.max, Number(level.price)),
+      }), { min: Infinity, max: -Infinity });
+      const step = adaptivePriceStep(priceBounds.max - priceBounds.min);
+      adaptiveBandWidth = step;
+      const buckets = new Map();
+      levels.forEach((level) => {
+        const price = Number(level.price);
+        const key = Math.floor(price / step);
+        const bucket = buckets.get(key) || {
+          buyUsd: 0,
+          sellUsd: 0,
+          deltaUsd: 0,
+        };
+        bucket.buyUsd += Number(level.buy_volume_usd);
+        bucket.sellUsd += Number(level.sell_volume_usd);
+        bucket.deltaUsd += Number(level.delta_usd);
+        buckets.set(key, bucket);
+      });
+
+      const profile = [...buckets.entries()]
+        .map(([key, bucket]) => ({
+          key,
+          price: key * step,
+          ...bucket,
+          volumeUsd: bucket.buyUsd + bucket.sellUsd,
+        }))
+        .sort((left, right) => right.price - left.price);
+      const maxVolume = profile.reduce((maximum, level) =>
+        Math.max(maximum, level.volumeUsd), 0
+      );
+      const maxDelta = profile.reduce((maximum, level) =>
+        Math.max(maximum, Math.abs(level.deltaUsd)), 0
+      );
+      const pointOfControl = profile.reduce((best, level) =>
+        level.volumeUsd > best.volumeUsd ? level : best
+      );
+      const currentBucket = hasCurrentPrice ? Math.floor(currentPrice / step) : null;
+      const vwapBucket = hasVwap ? Math.floor(vwap / step) : null;
+      const fragment = document.createDocumentFragment();
+
+      profile.forEach((level) => {
+        const isCurrent = currentBucket === level.key;
+        const isVwap = vwapBucket === level.key;
+        const isPoc = pointOfControl.key === level.key;
+        const row = document.createElement('div');
+        row.className = `cvd-profile-level${isCurrent ? ' current' : ''}${isVwap ? ' vwap' : ''}${isPoc ? ' poc' : ''}`;
+        row.setAttribute('role', 'row');
+        row.setAttribute(
+          'aria-label',
+          `${formatProfilePrice(level.price)}${isCurrent ? ', precio actual' : ''}${isVwap ? ', nivel VWAP' : ''}${isPoc ? ', punto de control' : ''}`
+        );
+
+        const priceCell = addProfileCell(row, 'profile-price', formatProfilePrice(level.price));
+        const markers = [
+          isCurrent ? 'ACTUAL' : '',
+          isVwap ? 'VWAP' : '',
+          isPoc ? 'POC' : '',
+        ].filter(Boolean);
+        if (markers.length) {
+          const marker = document.createElement('small');
+          marker.className = 'profile-markers';
+          marker.textContent = ` · ${markers.join(' · ')}`;
+          priceCell.appendChild(marker);
+        }
+
+        const volumeTrack = document.createElement('span');
+        volumeTrack.className = 'profile-volume-track';
+        volumeTrack.setAttribute('aria-hidden', 'true');
+        const buyBar = document.createElement('span');
+        buyBar.className = 'profile-volume-buy';
+        buyBar.style.width = `${(level.buyUsd / maxVolume) * 100}%`;
+        const sellBar = document.createElement('span');
+        sellBar.className = 'profile-volume-sell';
+        sellBar.style.width = `${(level.sellUsd / maxVolume) * 100}%`;
+        volumeTrack.append(buyBar, sellBar);
+        row.appendChild(volumeTrack);
+
+        const deltaCell = document.createElement('span');
+        deltaCell.className = 'profile-delta-cell';
+        const deltaTrack = document.createElement('span');
+        deltaTrack.className = 'profile-delta-track';
+        deltaTrack.setAttribute('aria-hidden', 'true');
+        const deltaBar = document.createElement('span');
+        const deltaWidth = maxDelta > 0 ? (Math.abs(level.deltaUsd) / maxDelta) * 50 : 0;
+        deltaBar.className = `profile-delta-bar${level.deltaUsd >= 0 ? ' positive' : ' negative'}`;
+        deltaBar.style.width = `${deltaWidth}%`;
+        deltaBar.style.left = level.deltaUsd >= 0 ? '50%' : `calc(50% - ${deltaWidth}%)`;
+        deltaTrack.appendChild(deltaBar);
+        const deltaValue = document.createElement('span');
+        deltaValue.className = 'profile-delta-value';
+        deltaValue.textContent = formatProfileUsd(level.deltaUsd, true);
+        deltaCell.append(deltaTrack, deltaValue);
+        row.appendChild(deltaCell);
+        fragment.appendChild(row);
+      });
+      elCvdProfileRows.replaceChildren(fragment);
+    }
+
+    const selectedOption = elCvdProfileWindow
+      ? elCvdProfileWindow.options[elCvdProfileWindow.selectedIndex]
+      : null;
+    const expectedBuckets = (startTimestamp, endTimestamp) => {
+      const startMinute = Math.floor(Number(startTimestamp) / 60_000);
+      const endMinute = Math.floor(Number(endTimestamp) / 60_000);
+      return Math.max(0, endMinute - startMinute + 1);
+    };
+    const expectedProfileBuckets = expectedBuckets(data.profile_start_ms, data.profile_end_ms);
+    const expectedSessionBuckets = expectedBuckets(data.session_start_ms, data.session_end_ms);
+    const profileComplete = data.profile_first_trade_ms !== null
+      && data.profile_first_trade_ms !== undefined
+      && Number.isFinite(Number(data.profile_first_trade_ms))
+      && Number(data.profile_first_trade_ms) <= Number(data.profile_start_ms)
+      && Number(data.profile_bucket_count) >= expectedProfileBuckets;
+    const sessionComplete = data.session_first_trade_ms !== null
+      && data.session_first_trade_ms !== undefined
+      && Number.isFinite(Number(data.session_first_trade_ms))
+      && Number(data.session_first_trade_ms) <= Number(data.session_start_ms)
+      && Number(data.session_bucket_count) >= expectedSessionBuckets;
+    const profileCoverage = profileComplete
+      ? 'ventana continua'
+      : data.profile_first_trade_ms
+        ? `parcial ${Number(data.profile_bucket_count) || 0}/${expectedProfileBuckets} min · desde ${formatProfileTime(data.profile_first_trade_ms)} UTC`
+        : 'sin histórico todavía';
+    const vwapCoverage = sessionComplete
+      ? 'VWAP con sesión completa'
+      : data.session_first_trade_ms
+        ? `VWAP parcial ${Number(data.session_bucket_count) || 0}/${expectedSessionBuckets} min · desde ${formatProfileTime(data.session_first_trade_ms)} UTC`
+        : 'VWAP esperando datos de la sesión';
+    elCvdProfileStatus.classList.remove('error');
+    elCvdProfileStatus.textContent = `${selectedOption ? selectedOption.textContent : 'Perfil'} · ${profileCoverage} · ${vwapCoverage}${adaptiveBandWidth ? ` · Bandas adaptativas de $${adaptiveBandWidth.toLocaleString('en-US')}` : ''} · Actualización cada 5 s.`;
+  }
+
+  async function loadOrderFlowProfile() {
+    if (!elCvdProfileWindow || !elCvdProfileStatus) return;
+    const requestId = ++profileRequestId;
+    const query = new URLSearchParams({ window_minutes: elCvdProfileWindow.value });
+    try {
+      const response = await fetch(`/api/orderflow/profile?${query}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || `Error HTTP ${response.status}`);
+      if (requestId !== profileRequestId) return;
+      renderOrderFlowProfile(data);
+    } catch (error) {
+      if (requestId !== profileRequestId) return;
+      console.error('Error cargando el perfil de volumen/CVD:', error);
+      elCvdProfileStatus.classList.add('error');
+      elCvdProfileStatus.textContent = `No se pudo actualizar el perfil: ${error.message}`;
+    }
+  }
+
+  function updateProbabilities(probs) {
     if (!probs) return;
 
     if (elClassificationBadge) {
@@ -512,18 +785,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 5. HFT
     elProbHft.textContent = `${probs.hft_competition}%`;
 
-    // 6. CVD Display
-    if (cvdUsd !== null && elProbCvd) {
-      const sign = cvdUsd >= 0 ? '+' : '';
-      elProbCvd.textContent = `${sign}$${(cvdUsd / 1000).toFixed(1)}k`;
-      const row = document.querySelector('.cvd-style');
-      if (row) {
-        row.classList.toggle('positive', cvdUsd >= 0);
-        row.classList.toggle('negative', cvdUsd < 0);
-      }
-    }
-
-    if (addProbabilitySample(probs, Number(probs.timestamp_ms) || Date.now(), cvdUsd)) {
+    if (addProbabilitySample(probs, Number(probs.timestamp_ms) || Date.now())) {
       renderProbabilitySparklines();
     }
 
@@ -599,20 +861,18 @@ document.addEventListener('DOMContentLoaded', () => {
     renderProbabilitySparklines();
   }
 
-  function addProbabilitySample(probabilities, timestamp, cvdUsd = null) {
+  function addProbabilitySample(probabilities, timestamp) {
     const bucket = Math.floor(timestamp / PROBABILITY_SAMPLE_MS);
     if (bucket === lastProbabilitySampleBucket) return false;
     lastProbabilitySampleBucket = bucket;
 
     Object.keys(PROBABILITY_SERIES).forEach((key) => {
-      const isCvd = PROBABILITY_SERIES[key].isCvd;
-      const rawValue = isCvd ? (cvdUsd !== null ? cvdUsd : probabilities[key]) : probabilities[key];
-      const value = Number(rawValue);
+      const value = Number(probabilities[key]);
       if (!Number.isFinite(value)) return;
       const samples = probabilityHistory[key];
       samples.push({
         timestamp,
-        value: isCvd ? value : Math.max(0, Math.min(100, value)),
+        value: Math.max(0, Math.min(100, value)),
       });
       while (
         samples.length
@@ -635,12 +895,6 @@ document.addEventListener('DOMContentLoaded', () => {
       let previousTimestamp = null;
       let lastPoint = null;
 
-      const isCvd = elements.isCvd;
-      let maxAbsCvd = 1000;
-      if (isCvd && samples.length) {
-        maxAbsCvd = Math.max(1000, ...samples.map((s) => Math.abs(s.value)));
-      }
-
       samples.forEach((sample) => {
         if (
           previousTimestamp !== null
@@ -650,9 +904,7 @@ document.addEventListener('DOMContentLoaded', () => {
           segment = [];
         }
         const x = Math.max(0, Math.min(240, ((sample.timestamp - start) / PROBABILITY_WINDOW_MS) * 240));
-        const y = isCvd
-          ? Math.max(4, Math.min(40, 22 - (sample.value / maxAbsCvd) * 18))
-          : (40 - (sample.value / 100) * 36);
+        const y = 40 - (sample.value / 100) * 36;
         segment.push(`${segment.length ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`);
         lastPoint = { x, y, rawValue: sample.value };
         previousTimestamp = sample.timestamp;
@@ -664,17 +916,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (lastPoint) {
           elements.dot.setAttribute('cx', lastPoint.x.toFixed(1));
           elements.dot.setAttribute('cy', lastPoint.y.toFixed(1));
-        }
-      }
-      if (isCvd && lastPoint) {
-        if (elements.row) {
-          elements.row.classList.toggle('positive', lastPoint.rawValue >= 0);
-          elements.row.classList.toggle('negative', lastPoint.rawValue < 0);
-        }
-        if (elements.elVal) {
-          const sign = lastPoint.rawValue >= 0 ? '+' : '';
-          const absVal = Math.abs(lastPoint.rawValue);
-          elements.elVal.textContent = `${sign}$${(absVal / 1000).toFixed(1)}k`;
         }
       }
     });
@@ -706,11 +947,10 @@ document.addEventListener('DOMContentLoaded', () => {
       [...buckets.entries()].sort(([left], [right]) => left - right).forEach(([timestamp, values]) => {
         Object.keys(PROBABILITY_SERIES).forEach((key) => {
           const value = values[key];
-          const isCvd = PROBABILITY_SERIES[key].isCvd;
           if (Number.isFinite(value)) {
             probabilityHistory[key].push({
               timestamp,
-              value: isCvd ? value : Math.max(0, Math.min(100, value)),
+              value: Math.max(0, Math.min(100, value)),
             });
           }
         });

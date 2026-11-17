@@ -26,10 +26,12 @@ class OnlineGaussianHMM:
         initial_probs: np.ndarray,
         scaler_mean: np.ndarray,
         scaler_std: np.ndarray,
+        feature_schema_version: Optional[str] = None,
     ):
         self.n_states = n_states
         self.state_names = state_names
         self.feature_names = feature_names
+        self.feature_schema_version = feature_schema_version
         self.A = np.array(transition_matrix, dtype=np.float64)  # Shape (K, K)
         self.means = np.array(emission_means, dtype=np.float64)  # Shape (K, D)
         self.vars = np.maximum(0.01, np.array(emission_vars, dtype=np.float64))  # Shape (K, D)
@@ -113,6 +115,7 @@ class OnlineGaussianHMM:
             "n_states": self.n_states,
             "state_names": self.state_names,
             "feature_names": self.feature_names,
+            "feature_schema_version": self.feature_schema_version,
             "scaler_mean": self.scaler_mean.tolist(),
             "scaler_std": self.scaler_std.tolist(),
             "initial_probs": self.pi.tolist(),
@@ -140,4 +143,5 @@ class OnlineGaussianHMM:
             initial_probs=np.array(data["initial_probs"]),
             scaler_mean=np.array(data["scaler_mean"]),
             scaler_std=np.array(data["scaler_std"]),
+            feature_schema_version=data.get("feature_schema_version"),
         )

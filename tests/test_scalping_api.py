@@ -6,8 +6,15 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import HTTPException
 
+from config import CONFIG
 from src.api import server
-from src.core.trade_model import ClassificationProbabilities, OrderFlowMetrics
+from src.core.market_data_store import MarketDataStore
+from src.core.trade_model import (
+    AggregatedTrade,
+    ClassificationProbabilities,
+    OrderFlowMetrics,
+    TradeSide,
+)
 
 
 def test_scalping_status_counts_only_the_configured_exchange(tmp_path):
@@ -82,6 +89,53 @@ def test_scalping_status_reports_recent_snapshot_coverage(tmp_path):
     assert b'"recent_maximum_snapshot_gap_seconds":1.0' in response.body
 
 
+def test_orderflow_profile_endpoint_returns_selected_window_and_session_vwap(tmp_path):
+    now_ms = 1_744_000_000_000
+    store = MarketDataStore(tmp_path / "profile-api.sqlite3", (5,), 1.0)
+    store.initialize()
+    store.record_profile_trade(
+        now_ms - 20_000,
+        CONFIG.scalping.symbol,
+        CONFIG.scalping.exchange,
+        70_000.0,
+        0.1,
+        "BUY",
+    )
+    store.record_observation(
+        now_ms - 20_000,
+        CONFIG.scalping.symbol,
+        70_000.0,
+        7_000.0,
+        {},
+        {},
+        {},
+        market_source=CONFIG.scalping.exchange,
+    )
+
+    with patch.object(server, "market_data_store", store):
+        with patch.object(server.time, "time", return_value=now_ms / 1000):
+            response = asyncio.run(server.get_orderflow_profile(window_minutes=60))
+
+    payload = json.loads(response.body)
+    assert response.status_code == 200
+    assert payload["window_minutes"] == 60
+    assert payload["levels"][0]["delta_usd"] == 7_000.0
+    assert payload["profile_bucket_count"] == 1
+    assert payload["session_bucket_count"] == 1
+    assert payload["session_vwap"] == 70_000.0
+    assert payload["current_price"] == 70_000.0
+    store.close()
+
+
+def test_orderflow_profile_endpoint_rejects_unsupported_windows():
+    try:
+        asyncio.run(server.get_orderflow_profile(window_minutes=30))
+    except HTTPException as error:
+        assert error.status_code == 400
+    else:
+        raise AssertionError("Expected unsupported profile window to be rejected.")
+
+
 def test_backtest_endpoint_returns_engine_result_and_broadcasts():
     result = {"status": "validated", "alert_enabled": True}
     engine = Mock()
@@ -139,6 +193,31 @@ def test_capture_market_snapshot_requires_a_fresh_bybit_trade():
     save.assert_not_called()
 
 
+def test_out_of_order_aggregated_trade_is_dropped_without_refreshing_feed():
+    classifier = Mock()
+    classifier.add_trade.side_effect = server.OutOfOrderTradeError(
+        "Los eventos deben llegar en orden temporal."
+    )
+    trade = AggregatedTrade(
+        exchange=CONFIG.scalping.exchange,
+        symbol=CONFIG.scalping.symbol,
+        first_timestamp_ms=1_000,
+        last_timestamp_ms=1_000,
+        price=70_000.0,
+        total_size=0.1,
+        total_usd_value=7_000.0,
+        side=TradeSide.BUY,
+        trade_count=1,
+    )
+
+    with patch.object(server, "classifier_for_stream", return_value=classifier):
+        with patch.object(server, "last_bybit_trade_at_ms", 123):
+            asyncio.run(server.handle_aggregated_trade(trade))
+            assert server.last_bybit_trade_at_ms == 123
+
+    classifier.classify.assert_not_called()
+
+
 def test_capture_market_snapshot_persists_latest_fresh_state():
     now_ms = int(time.time() * 1000)
     metrics = OrderFlowMetrics(
@@ -191,8 +270,37 @@ def test_capture_market_snapshot_persists_latest_fresh_state():
             "volume_per_second_usd": metrics.volume_per_second_usd,
             "price_delta_bps": metrics.price_delta_bps,
             "inter_arrival_cv": metrics.inter_arrival_cv,
+            "window_seconds": metrics.window_seconds,
+            "event_count": metrics.event_count,
+            "window_metrics": {
+                str(window): {
+                    "current_price": metrics.current_price,
+                    "cvd_usd": metrics.cvd_usd,
+                    "cvd_btc": metrics.cvd_btc,
+                    "buy_volume_usd": metrics.buy_volume_usd,
+                    "sell_volume_usd": metrics.sell_volume_usd,
+                    "trades_per_second": metrics.trades_per_second,
+                    "volume_per_second_usd": metrics.volume_per_second_usd,
+                    "price_delta_bps": metrics.price_delta_bps,
+                    "inter_arrival_cv": metrics.inter_arrival_cv,
+                    "window_seconds": metrics.window_seconds,
+                    "event_count": metrics.event_count,
+                }
+                for window in CONFIG.classifier.feature_windows_seconds
+            },
+            "feature_schema_version": CONFIG.classifier.feature_schema_version,
         },
     )
+
+
+def test_classifier_registry_keeps_exchange_symbol_streams_independent():
+    binance_classifier = server.classifier_for_stream("Binance-Spot", "ETHUSDT")
+    bybit_classifier = server.classifier_for_stream("Bybit-Linear", "ETHUSDT")
+
+    assert binance_classifier is not bybit_classifier
+    assert binance_classifier.stream_identity == ("Binance-Spot", "ETHUSDT")
+    assert bybit_classifier.stream_identity == ("Bybit-Linear", "ETHUSDT")
+    assert binance_classifier.inference_mode == "heuristic"
 
 
 def test_classification_history_returns_selected_mode_for_last_hour(tmp_path):

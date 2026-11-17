@@ -331,7 +331,8 @@ class ScalpingEngine:
         validation = self._summarize(validation_trades)
         validated = (
             validation["trade_count"] >= self.config.min_validation_trades
-            and validation["expectancy_bps"] > 0
+            and validation["expectancy_lower_95_bps"] is not None
+            and validation["expectancy_lower_95_bps"] > 0
         )
         self.parameters = (
             best_parameters
@@ -352,7 +353,11 @@ class ScalpingEngine:
                     if validated and (
                         strategy != "flow_momentum" or direction_mode == "inverse"
                     )
-                    else "La estrategia seleccionada no mostró expectativa neta positiva suficiente fuera de muestra; no se activan alertas de entrada."
+                    else (
+                        "La validación fuera de muestra no superó el mínimo de operaciones "
+                        "o el límite inferior HAC del 95 % de la expectativa neta; "
+                        "no se activan alertas de entrada."
+                    )
                 )
             ),
             "source": self.config.exchange,
@@ -1071,6 +1076,7 @@ class ScalpingEngine:
                 "total_costs_bps": 0.0,
                 "max_drawdown_bps": 0.0,
                 "average_duration_seconds": 0.0,
+                "expectancy_lower_95_bps": None,
             }
         gross_values = np.asarray(
             [float(trade["gross_return_bps"]) for trade in trades],
@@ -1086,10 +1092,26 @@ class ScalpingEngine:
         drawdown = np.maximum.accumulate(np.concatenate(([0.0], equity))) - np.concatenate(
             ([0.0], equity)
         )
+        centered = net_values - np.mean(net_values)
+        observation_count = len(centered)
+        bandwidth = min(
+            observation_count - 1,
+            int(4 * (observation_count / 100) ** (2 / 9)),
+        )
+        long_run_variance = float(np.dot(centered, centered) / observation_count)
+        for lag in range(1, bandwidth + 1):
+            autocovariance = float(np.dot(centered[lag:], centered[:-lag]) / observation_count)
+            weight = 1.0 - lag / (bandwidth + 1)
+            long_run_variance += 2.0 * weight * autocovariance
+        hac_standard_error = math.sqrt(
+            max(0.0, long_run_variance) / observation_count
+        )
+        expectancy_lower_95_bps = float(np.mean(net_values)) - 1.96 * hac_standard_error
         return {
             "trade_count": int(len(net_values)),
             "gross_expectancy_bps": round(float(np.mean(gross_values)), 3),
             "expectancy_bps": round(float(np.mean(net_values)), 3),
+            "expectancy_lower_95_bps": round(expectancy_lower_95_bps, 3),
             "win_rate_pct": round(float(np.mean(net_values > 0) * 100.0), 2),
             "profit_factor": round(gains / losses, 3) if losses > 0 else (
                 None if gains > 0 else 0.0

@@ -1,11 +1,14 @@
 import asyncio
 from unittest.mock import Mock, patch
 
+import numpy as np
 import pytest
 from fastapi import HTTPException
 
+from config import CONFIG
 from src.api import server
 from src.core.classifier import MicrostructureClassifier
+from src.ml.hmm_model import OnlineGaussianHMM
 
 
 def test_classifier_resets_trained_model_when_switching_to_model():
@@ -31,6 +34,28 @@ def test_classifier_does_not_claim_model_mode_when_artifact_is_missing():
 def test_classifier_falls_back_to_heuristic_on_startup_without_model():
     with patch.object(MicrostructureClassifier, "_load_hmm_model"):
         classifier = MicrostructureClassifier(inference_mode="model")
+
+    assert classifier.hmm_model is None
+    assert classifier.inference_mode == "heuristic"
+
+
+def test_classifier_rejects_hmm_artifact_without_matching_feature_schema(tmp_path, monkeypatch):
+    artifact = tmp_path / "legacy-hmm.json"
+    model = OnlineGaussianHMM(
+        n_states=1,
+        state_names=["legacy"],
+        feature_names=["feature"],
+        transition_matrix=np.ones((1, 1)),
+        emission_means=np.zeros((1, 1)),
+        emission_vars=np.ones((1, 1)),
+        initial_probs=np.ones(1),
+        scaler_mean=np.zeros(1),
+        scaler_std=np.ones(1),
+    )
+    model.save(artifact)
+    monkeypatch.setattr(CONFIG.classifier, "hmm_model_path", str(artifact))
+
+    classifier = MicrostructureClassifier(inference_mode="model")
 
     assert classifier.hmm_model is None
     assert classifier.inference_mode == "heuristic"

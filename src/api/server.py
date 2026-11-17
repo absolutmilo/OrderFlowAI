@@ -13,7 +13,7 @@ import time
 import aiohttp
 from dataclasses import asdict
 from pathlib import Path
-from typing import Set, List, Optional
+from typing import Dict, Set, List, Optional
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.core.trade_model import AggregatedTrade, RawTrade
 from src.core.aggregator import TradeAggregator
-from src.core.classifier import MicrostructureClassifier
+from src.core.classifier import MicrostructureClassifier, OutOfOrderTradeError
 from src.core.market_data_store import MarketDataStore
 from src.core.scalping import STRATEGIES, ScalpingEngine
 from src.core.candle_backtest import CandleBacktestEngine, aggregate_klines
@@ -45,8 +45,13 @@ app.add_middleware(
 )
 
 # Shared components
-classifier = MicrostructureClassifier()
-scalp_classifier = MicrostructureClassifier(inference_mode="heuristic")
+primary_classifier_key = (CONFIG.scalping.exchange, CONFIG.scalping.symbol)
+classifier = MicrostructureClassifier(stream_identity=primary_classifier_key)
+classifiers_by_stream = {primary_classifier_key: classifier}
+scalp_classifier = MicrostructureClassifier(
+    inference_mode="heuristic",
+    stream_identity=primary_classifier_key,
+)
 database_path = Path(__file__).resolve().parents[2] / CONFIG.data_capture.database_path
 market_data_store = MarketDataStore(
     database_path,
@@ -70,6 +75,26 @@ data_capture_status = "starting"
 
 def get_inference_mode() -> str:
     return classifier.inference_mode
+
+
+def classifier_for_stream(exchange: str, symbol: str) -> MicrostructureClassifier:
+    key = (exchange, symbol)
+    if key not in classifiers_by_stream:
+        classifiers_by_stream[key] = MicrostructureClassifier(
+            inference_mode="heuristic",
+            stream_identity=key,
+        )
+    return classifiers_by_stream[key]
+
+
+def metrics_by_window(
+    classifier_instance: MicrostructureClassifier,
+) -> Dict[str, Dict[str, object]]:
+    return {
+        str(window_seconds): asdict(metrics)
+        for window_seconds in CONFIG.classifier.feature_windows_seconds
+        if (metrics := classifier_instance.get_current_metrics(window_seconds)) is not None
+    }
 
 
 def snapshot_scores(heuristic_probabilities, hmm_probabilities=None) -> dict:
@@ -116,6 +141,7 @@ def capture_market_snapshot(now_ms: int) -> bool:
         data_capture_status = "waiting_for_warmup"
         return False
 
+    scalp_window_metrics = metrics_by_window(scalp_classifier)
     previous_capture_at_ms = last_capture_at_ms
     if (
         previous_capture_at_ms
@@ -130,7 +156,11 @@ def capture_market_snapshot(now_ms: int) -> bool:
         else None
     )
     scalp_probabilities = scalp_classifier.classify()
-    scalp_features = asdict(scalp_metrics)
+    scalp_features = {
+        **asdict(scalp_metrics),
+        "window_metrics": scalp_window_metrics,
+        "feature_schema_version": CONFIG.classifier.feature_schema_version,
+    }
     market_data_store.record_observation(
         observed_at_ms=now_ms,
         symbol=CONFIG.scalping.symbol,
@@ -176,14 +206,37 @@ async def handle_aggregated_trade(agg_trade: AggregatedTrade):
     """Classify each aggregated event and refresh the live market state."""
     global last_bybit_trade_at_ms, trade_counter
     trade_counter += 1
+    stream_classifier = classifier_for_stream(agg_trade.exchange, agg_trade.symbol)
+    try:
+        stream_classifier.add_trade(agg_trade)
+    except OutOfOrderTradeError:
+        logger.warning(
+            "Se descarta evento fuera de orden de %s %s (timestamp=%s).",
+            agg_trade.exchange,
+            agg_trade.symbol,
+            agg_trade.last_timestamp_ms,
+        )
+        return
+
     now_ms = int(time.time() * 1000)
     if agg_trade.exchange == CONFIG.scalping.exchange:
         last_bybit_trade_at_ms = now_ms
-
-    # Update classifier
-    classifier.add_trade(agg_trade)
-    probabilities = classifier.classify()
-    metrics = classifier.get_current_metrics()
+        try:
+            market_data_store.record_profile_trade(
+                timestamp_ms=agg_trade.last_timestamp_ms,
+                symbol=agg_trade.symbol,
+                market_source=agg_trade.exchange,
+                price=agg_trade.price,
+                size_btc=agg_trade.total_size,
+                side=agg_trade.side.value,
+            )
+        except (RuntimeError, sqlite3.Error):
+            logger.exception(
+                "No se pudo guardar el trade para el perfil de volumen/CVD."
+            )
+    probabilities = stream_classifier.classify()
+    metrics = stream_classifier.get_current_metrics()
+    stream_window_metrics = metrics_by_window(stream_classifier)
 
     if agg_trade.exchange == CONFIG.scalping.exchange:
         scalp_classifier.add_trade(agg_trade)
@@ -205,13 +258,17 @@ async def handle_aggregated_trade(agg_trade: AggregatedTrade):
     # Broadcast to web dashboard
     broadcast_data = {
         "type": "order_flow_tick",
+        "market_source": agg_trade.exchange,
+        "primary_market_source": CONFIG.scalping.exchange,
         "trade": agg_trade.to_dict(),
         "probabilities": probabilities.to_dict(),
         "metrics": metrics.to_dict() if metrics else None,
+        "metrics_by_window": stream_window_metrics,
         "exchange_stats": exchange_counts,
-        "inference_mode": classifier.inference_mode,
+        "inference_mode": stream_classifier.inference_mode,
         "data_capture_status": data_capture_status,
         "detector_config": asdict(CONFIG.classifier),
+        "feature_windows_seconds": CONFIG.classifier.feature_windows_seconds,
         "scalping": {
             "signal": scalping_engine.last_signal or {"status": "no_setup"},
             "alert_enabled": scalping_engine.parameters is not None,
@@ -296,12 +353,16 @@ async def websocket_endpoint(websocket: WebSocket):
         probs = classifier.classify()
         await websocket.send_text(json.dumps({
             "type": "snapshot",
+            "market_source": CONFIG.scalping.exchange,
+            "primary_market_source": CONFIG.scalping.exchange,
             "probabilities": probs.to_dict(),
             "metrics": metrics.to_dict() if metrics else None,
+            "metrics_by_window": metrics_by_window(classifier),
             "exchange_stats": exchange_counts,
             "inference_mode": classifier.inference_mode,
             "data_capture_status": data_capture_status,
             "detector_config": asdict(CONFIG.classifier),
+            "feature_windows_seconds": CONFIG.classifier.feature_windows_seconds,
             "scalping": {
                 "signal": scalping_engine.last_signal or {"status": "no_setup"},
                 "alert_enabled": scalping_engine.parameters is not None,
@@ -566,6 +627,8 @@ async def get_status():
         "exchange_counts": exchange_counts,
         "is_warmed_up": classifier.is_warmed_up(),
         "window_trades": len(classifier.trades),
+        "market_source": CONFIG.scalping.exchange,
+        "feature_windows_seconds": CONFIG.classifier.feature_windows_seconds,
         "inference_mode": classifier.inference_mode,
         "detector_config": asdict(CONFIG.classifier),
         "data_capture_status": data_capture_status,
@@ -586,6 +649,46 @@ async def get_status():
         "database": "SQLite",
         "connected_clients": len(active_websockets),
         "total_aggregated_trades": trade_counter
+    })
+
+
+@app.get("/api/orderflow/profile")
+async def get_orderflow_profile(window_minutes: int = 60):
+    allowed_windows = {15, 60, 240, 1440}
+    if window_minutes not in allowed_windows:
+        raise HTTPException(
+            status_code=400,
+            detail="La ventana del perfil debe ser 15, 60, 240 o 1440 minutos.",
+        )
+
+    now_ms = int(time.time() * 1000)
+    session_start_ms = now_ms - now_ms % (24 * 60 * 60 * 1000)
+    latest_bucket_start_ms = now_ms - now_ms % 60_000
+    profile_start_ms = latest_bucket_start_ms - window_minutes * 60 * 1000
+    try:
+        profile = market_data_store.get_orderflow_profile(
+            symbol=CONFIG.scalping.symbol,
+            market_source=CONFIG.scalping.exchange,
+            profile_start_ms=profile_start_ms,
+            session_start_ms=session_start_ms,
+            end_ms=now_ms,
+        )
+    except (RuntimeError, sqlite3.Error) as error:
+        logger.exception("No se pudo consultar el perfil de volumen/CVD.")
+        raise HTTPException(
+            status_code=503,
+            detail="El histórico del perfil no está disponible.",
+        ) from error
+
+    return JSONResponse({
+        **profile,
+        "symbol": CONFIG.scalping.symbol,
+        "market_source": CONFIG.scalping.exchange,
+        "window_minutes": window_minutes,
+        "profile_start_ms": profile_start_ms,
+        "profile_end_ms": now_ms,
+        "session_start_ms": session_start_ms,
+        "session_end_ms": now_ms,
     })
 
 

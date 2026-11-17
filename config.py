@@ -32,9 +32,12 @@ class AggregatorConfig:
 
 @dataclass
 class ClassifierConfig:
-    # Size of the rolling window of trades used for feature extraction
-    rolling_window_trades: int = 200
-    # Minimum trades before emitting high-confidence classifications
+    # Event-time windows used for distinct microstructure measurements
+    feature_windows_seconds: Tuple[int, ...] = (1, 5, 30)
+    primary_feature_window_seconds: int = 5
+    max_trade_gap_seconds: float = 5.0
+    feature_schema_version: str = "tape_windows_1_5_30_v1"
+    # Minimum observations and elapsed time before classification
     warmup_trades: int = 25
 
     # Inference mode: "model" (Gaussian HMM) or "heuristic" (Rule-based sigmoid)
@@ -82,7 +85,7 @@ class ScalpingConfig:
     taker_fee_bps_per_side: float = 6.0
     slippage_bps_per_side: float = 2.0
     min_training_observations: int = 36000
-    min_validation_trades: int = 10
+    min_validation_trades: int = 100
     signal_persistence_seconds: int = 3
     max_snapshot_gap_seconds: float = 5.0
     minimum_snapshot_coverage: float = 0.80

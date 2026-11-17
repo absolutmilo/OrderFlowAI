@@ -30,6 +30,7 @@ class MarketDataStore:
         self.max_database_size_bytes = max_database_size_bytes
         self.retention_target_fraction = retention_target_fraction
         self.connection: Optional[sqlite3.Connection] = None
+        self._last_profile_prune_at_ms = 0
 
     def initialize(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,6 +66,23 @@ class MarketDataStore:
         self.connection.execute(
             f"CREATE TABLE IF NOT EXISTS market_observations ({', '.join(observation_columns)})"
         )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS orderflow_trade_profile (
+                bucket_start_ms INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                market_source TEXT NOT NULL,
+                price REAL NOT NULL,
+                buy_volume_btc REAL NOT NULL DEFAULT 0,
+                sell_volume_btc REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY (bucket_start_ms, symbol, market_source, price)
+            )
+            """
+        )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_orderflow_profile_source_time "
+            "ON orderflow_trade_profile(market_source, symbol, bucket_start_ms)"
+        )
         existing_columns = {
             row[1] for row in self.connection.execute("PRAGMA table_info(market_observations)")
         }
@@ -92,6 +110,141 @@ class MarketDataStore:
         )
         self.connection.commit()
         self._enforce_size_limit()
+
+    def record_profile_trade(
+        self,
+        timestamp_ms: int,
+        symbol: str,
+        market_source: str,
+        price: float,
+        size_btc: float,
+        side: str,
+    ) -> None:
+        if (
+            timestamp_ms < 0
+            or not math.isfinite(price)
+            or not math.isfinite(size_btc)
+            or price <= 0
+            or size_btc <= 0
+        ):
+            raise ValueError("El timestamp, el precio y el tamaño deben ser positivos.")
+        if side not in {"BUY", "SELL"}:
+            raise ValueError("El lado del trade debe ser BUY o SELL.")
+
+        bucket_start_ms = timestamp_ms - timestamp_ms % 60_000
+        volume_column = "buy_volume_btc" if side == "BUY" else "sell_volume_btc"
+        connection = self._connection()
+        with connection:
+            connection.execute(
+                f"""
+                INSERT INTO orderflow_trade_profile
+                    (bucket_start_ms, symbol, market_source, price, {volume_column})
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (bucket_start_ms, symbol, market_source, price)
+                DO UPDATE SET {volume_column} =
+                    {volume_column} + excluded.{volume_column}
+                """,
+                (bucket_start_ms, symbol, market_source, round(price, 2), size_btc),
+            )
+
+            if timestamp_ms - self._last_profile_prune_at_ms >= 60_000:
+                connection.execute(
+                    "DELETE FROM orderflow_trade_profile WHERE bucket_start_ms < ?",
+                    (timestamp_ms - 25 * 60 * 60 * 1000,),
+                )
+                self._last_profile_prune_at_ms = timestamp_ms
+
+    def get_orderflow_profile(
+        self,
+        symbol: str,
+        market_source: str,
+        profile_start_ms: int,
+        session_start_ms: int,
+        end_ms: int,
+    ) -> Dict[str, object]:
+        connection = self._connection()
+        levels = connection.execute(
+            """
+            SELECT
+                price,
+                SUM(buy_volume_btc) AS buy_volume_btc,
+                SUM(sell_volume_btc) AS sell_volume_btc
+            FROM orderflow_trade_profile
+            WHERE symbol = ? AND market_source = ?
+              AND bucket_start_ms >= ? AND bucket_start_ms <= ?
+            GROUP BY price
+            ORDER BY price
+            """,
+            (symbol, market_source, profile_start_ms, end_ms),
+        ).fetchall()
+        profile_coverage = connection.execute(
+            """
+            SELECT
+                MIN(bucket_start_ms),
+                MAX(bucket_start_ms),
+                COUNT(DISTINCT bucket_start_ms)
+            FROM orderflow_trade_profile
+            WHERE symbol = ? AND market_source = ?
+              AND bucket_start_ms >= ? AND bucket_start_ms <= ?
+            """,
+            (symbol, market_source, profile_start_ms, end_ms),
+        ).fetchone()
+        session = connection.execute(
+            """
+            SELECT
+                MIN(bucket_start_ms),
+                MAX(bucket_start_ms),
+                SUM(buy_volume_btc + sell_volume_btc),
+                SUM(price * (buy_volume_btc + sell_volume_btc)),
+                COUNT(DISTINCT bucket_start_ms)
+            FROM orderflow_trade_profile
+            WHERE symbol = ? AND market_source = ?
+              AND bucket_start_ms >= ? AND bucket_start_ms <= ?
+            """,
+            (symbol, market_source, session_start_ms, end_ms),
+        ).fetchone()
+        current_price_row = connection.execute(
+            """
+            SELECT price FROM market_observations
+            WHERE symbol = ? AND market_source = ? AND observed_at_ms <= ?
+            ORDER BY observed_at_ms DESC, id DESC
+            LIMIT 1
+            """,
+            (symbol, market_source, end_ms),
+        ).fetchone()
+
+        profile_levels = []
+        for price, buy_volume_btc, sell_volume_btc in levels:
+            total_volume_btc = buy_volume_btc + sell_volume_btc
+            profile_levels.append({
+                "price": price,
+                "buy_volume_btc": buy_volume_btc,
+                "sell_volume_btc": sell_volume_btc,
+                "volume_btc": total_volume_btc,
+                "buy_volume_usd": price * buy_volume_btc,
+                "sell_volume_usd": price * sell_volume_btc,
+                "delta_usd": price * (buy_volume_btc - sell_volume_btc),
+                "volume_usd": price * total_volume_btc,
+            })
+
+        session_volume_btc = session[2] or 0.0
+        session_volume_usd = session[3] or 0.0
+        return {
+            "levels": profile_levels,
+            "profile_first_trade_ms": profile_coverage[0],
+            "profile_last_trade_ms": profile_coverage[1],
+            "profile_bucket_count": profile_coverage[2],
+            "session_first_trade_ms": session[0],
+            "session_last_trade_ms": session[1],
+            "session_volume_btc": session_volume_btc,
+            "session_volume_usd": session_volume_usd,
+            "session_bucket_count": session[4],
+            "session_vwap": (
+                session_volume_usd / session_volume_btc
+                if session_volume_btc > 0 else None
+            ),
+            "current_price": current_price_row[0] if current_price_row else None,
+        }
 
     def record_observation(
         self,
@@ -293,6 +446,13 @@ class MarketDataStore:
                     "Could not checkpoint SQLite before enforcing the storage limit."
                 )
             connection.execute("VACUUM")
+            checkpoint = connection.execute(
+                "PRAGMA wal_checkpoint(TRUNCATE)"
+            ).fetchone()
+            if checkpoint is not None and checkpoint[0] != 0:
+                raise sqlite3.OperationalError(
+                    "Could not checkpoint SQLite after enforcing the storage limit."
+                )
 
     def close(self) -> None:
         if self.connection is not None:

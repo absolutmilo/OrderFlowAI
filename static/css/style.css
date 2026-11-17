@@ -603,6 +603,251 @@ main {
 .cvd-style.positive .sparkline-dot { fill: #00e676; }
 .cvd-style.negative .sparkline-dot { fill: #ff5252; }
 
+.cvd-profile-row {
+  grid-column: 1 / -1;
+  gap: 12px;
+}
+
+.cvd-profile-row:hover {
+  transform: none;
+}
+
+.cvd-profile-heading,
+.cvd-profile-summary,
+.profile-legend,
+.profile-legend span {
+  display: flex;
+  align-items: center;
+}
+
+.cvd-profile-heading {
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.profile-window-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.profile-window-control select {
+  padding: 6px 8px;
+  color: var(--text-main);
+  background: #0f151e;
+  border: 1px solid #384961;
+  border-radius: 5px;
+  font: inherit;
+}
+
+.cvd-profile-summary {
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  padding: 9px 12px;
+  background: #101721;
+  border: 1px solid #233042;
+  border-radius: 6px;
+}
+
+.profile-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.profile-stat > span,
+.profile-stat small {
+  color: var(--text-muted);
+  font-size: 0.65rem;
+}
+
+.profile-stat strong {
+  color: var(--text-main);
+  font: 700 0.9rem "SF Mono", Consolas, monospace;
+}
+
+.profile-stat strong.positive {
+  color: var(--green-buy);
+}
+
+.profile-stat strong.negative {
+  color: var(--red-sell);
+}
+
+.profile-legend {
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--text-muted);
+  font-size: 0.64rem;
+}
+
+.profile-legend span {
+  gap: 5px;
+}
+
+.profile-legend i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.profile-buy-key {
+  background: var(--green-buy);
+}
+
+.profile-sell-key {
+  background: var(--red-sell);
+}
+
+.profile-delta-key {
+  background: #00c8e8;
+}
+
+.cvd-profile-table {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font: 0.66rem "SF Mono", Consolas, monospace;
+}
+
+.cvd-profile-table-header,
+.cvd-profile-level {
+  display: grid;
+  grid-template-columns: minmax(76px, 0.7fr) minmax(100px, 2fr) minmax(110px, 1.3fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.cvd-profile-table-header {
+  padding: 0 8px 4px;
+  color: var(--text-muted);
+  font: 600 0.62rem "SF Mono", Consolas, monospace;
+}
+
+.cvd-profile-table-header span:nth-child(2),
+.cvd-profile-table-header span:nth-child(3) {
+  text-align: center;
+}
+
+.cvd-profile-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cvd-profile-level {
+  min-height: 23px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: #c4d0dc;
+}
+
+.cvd-profile-level.current {
+  background: rgba(0, 229, 255, 0.09);
+  outline: 1px solid rgba(0, 229, 255, 0.25);
+}
+
+.cvd-profile-level.vwap .profile-price {
+  color: #ffcf5c;
+}
+
+.cvd-profile-level.poc .profile-price {
+  font-weight: 800;
+}
+
+.profile-price {
+  white-space: nowrap;
+}
+
+.profile-markers {
+  margin-left: 3px;
+  color: #ffcf5c;
+  font-size: 0.55rem;
+}
+
+.profile-volume-track {
+  display: flex;
+  width: 100%;
+  height: 9px;
+  overflow: hidden;
+  background: #0a1017;
+  border-radius: 3px;
+}
+
+.profile-volume-buy {
+  height: 100%;
+  background: var(--green-buy);
+}
+
+.profile-volume-sell {
+  height: 100%;
+  background: var(--red-sell);
+}
+
+.profile-delta-cell {
+  display: grid;
+  grid-template-columns: minmax(45px, 1fr) 38px;
+  align-items: center;
+  gap: 5px;
+}
+
+.profile-delta-track {
+  position: relative;
+  height: 9px;
+  background: #0a1017;
+  border-radius: 3px;
+}
+
+.profile-delta-track::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: rgba(230, 237, 243, 0.35);
+  content: "";
+}
+
+.profile-delta-bar {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  border-radius: 2px;
+}
+
+.profile-delta-bar.positive {
+  background: var(--green-buy);
+}
+
+.profile-delta-bar.negative {
+  background: var(--red-sell);
+}
+
+.profile-delta-value {
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.profile-empty,
+.cvd-profile-status {
+  color: var(--text-muted);
+  font-size: 0.66rem;
+}
+
+.profile-empty {
+  padding: 10px 8px;
+}
+
+.cvd-profile-status.error {
+  color: #ff6b6b;
+}
+
 /* Live Notes Feed */
 .pattern-notes {
   background: #0f151e;
@@ -775,6 +1020,31 @@ main {
 
   .probability-group {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cvd-profile-row {
+    grid-column: 1 / -1;
+  }
+
+  .cvd-profile-heading {
+    align-items: flex-start;
+  }
+
+  .cvd-profile-table-header,
+  .cvd-profile-level {
+    grid-template-columns: 64px minmax(52px, 1.4fr) minmax(95px, 1fr);
+    gap: 6px;
+    padding-right: 4px;
+    padding-left: 4px;
+  }
+
+  .profile-delta-cell {
+    grid-template-columns: minmax(28px, 1fr) 34px;
+    gap: 3px;
+  }
+
+  .profile-delta-value {
+    font-size: 0.52rem;
   }
 }
 

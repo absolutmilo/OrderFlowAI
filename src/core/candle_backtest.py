@@ -176,7 +176,8 @@ class CandleBacktestEngine:
         validation = ScalpingEngine._summarize(validation_trades)
         validated = (
             validation["trade_count"] >= self.config.min_validation_trades
-            and validation["expectancy_bps"] > 0
+            and validation["expectancy_lower_95_bps"] is not None
+            and validation["expectancy_lower_95_bps"] > 0
         )
         interval_ms = expected_interval_ms
         return {
@@ -188,7 +189,8 @@ class CandleBacktestEngine:
                 "No valida ni activa señales live basadas en flujo de órdenes."
                 if validated
                 else (
-                    "La validación OHLCV no mostró expectativa neta positiva suficiente; "
+                    "La validación OHLCV no superó el mínimo de operaciones o el límite "
+                    "inferior HAC del 95 % de la expectativa neta; "
                     "no activa señales live."
                 )
             ),

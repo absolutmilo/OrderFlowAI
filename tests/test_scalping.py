@@ -85,6 +85,44 @@ def test_backtest_applies_round_trip_costs_to_target_exit():
     assert results[0]["exit_reason"] == "take_profit"
 
 
+def test_expectancy_lower_bound_rejects_noisy_positive_mean():
+    trades = [
+        {
+            "gross_return_bps": 10.0 if index % 10 == 0 else -1.0,
+            "net_return_bps": 10.0 if index % 10 == 0 else -1.0,
+            "cost_bps": 0.0,
+            "duration_seconds": 10.0,
+            "direction": "LONG",
+            "exit_reason": "time",
+        }
+        for index in range(100)
+    ]
+
+    summary = ScalpingEngine._summarize_metrics(trades)
+
+    assert summary["expectancy_bps"] > 0
+    assert summary["expectancy_lower_95_bps"] < 0
+    assert ScalpingConfig().min_validation_trades == 100
+
+
+def test_expectancy_lower_bound_is_positive_for_stable_positive_returns():
+    trades = [
+        {
+            "gross_return_bps": 1.0,
+            "net_return_bps": 1.0,
+            "cost_bps": 0.0,
+            "duration_seconds": 10.0,
+            "direction": "LONG",
+            "exit_reason": "time",
+        }
+        for _ in range(100)
+    ]
+
+    summary = ScalpingEngine._summarize_metrics(trades)
+
+    assert summary["expectancy_lower_95_bps"] == pytest.approx(1.0)
+
+
 def test_inverse_signals_swap_long_and_short_without_changing_entry_indices():
     original_signals = [(12, 1), (35, -1), (48, 1)]
 

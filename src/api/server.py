@@ -14,10 +14,11 @@ import aiohttp
 from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, Set, List, Optional
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from src.core.trade_model import AggregatedTrade, RawTrade
 from src.core.aggregator import TradeAggregator
@@ -28,6 +29,7 @@ from src.core.candle_backtest import CandleBacktestEngine, aggregate_klines
 from src.connectors.binance import BinanceConnector
 from src.connectors.bybit_kline_cache import load_or_update_bybit_klines
 from src.connectors.bybit import BybitLinearConnector
+from src.connectors.aggr_btcusd import AggrBtcusdConnector
 from src.api.chart_routes import router as chart_router
 from config import CONFIG
 
@@ -71,6 +73,74 @@ last_capture_at_ms = 0
 last_bybit_trade_at_ms = 0
 snapshot_capture_task: Optional[asyncio.Task] = None
 data_capture_status = "starting"
+latest_exchange_prices: Dict[str, Dict[str, float]] = {}
+latest_exchange_metrics: Dict[str, Dict[str, float]] = {}
+aggr_reference_quote: Optional[Dict[str, float]] = None
+MARKET_PRICE_FRESHNESS_MS = 5_000
+
+
+class AggrReferencePrice(BaseModel):
+    price: float = Field(gt=0, le=2_000_000, allow_inf_nan=False)
+    observed_at_ms: int = Field(gt=0)
+
+
+def _is_market_data_fresh(updated_at_ms: Optional[float], now_ms: int) -> bool:
+    if updated_at_ms is None:
+        return False
+    age_ms = now_ms - updated_at_ms
+    return 0 <= age_ms <= MARKET_PRICE_FRESHNESS_MS
+
+
+def market_comparison_snapshot(now_ms: Optional[int] = None) -> dict:
+    now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+    prices = {
+        source: {
+            **quote,
+            "fresh": _is_market_data_fresh(quote.get("updated_at_ms"), now_ms),
+        }
+        for source, quote in latest_exchange_prices.items()
+    }
+    if aggr_reference_quote is not None:
+        prices["AGGR-BTCUSD"] = {
+            **aggr_reference_quote,
+            "fresh": _is_market_data_fresh(
+                aggr_reference_quote.get("updated_at_ms"),
+                now_ms,
+            ),
+        }
+
+    flows = {
+        source: {
+            **metrics,
+            "fresh": _is_market_data_fresh(metrics.get("updated_at_ms"), now_ms),
+        }
+        for source, metrics in latest_exchange_metrics.items()
+    }
+
+    def spread(reference_source: str, comparison_source: str) -> dict:
+        reference = prices.get(reference_source)
+        comparison = prices.get(comparison_source)
+        if not reference or not comparison:
+            return {"fresh": False}
+        reference_price = reference["price"]
+        comparison_price = comparison["price"]
+        difference = comparison_price - reference_price
+        fresh = reference["fresh"] and comparison["fresh"]
+        return {
+            "difference_usd": round(difference, 4),
+            "difference_bps": round(difference / reference_price * 10_000, 3),
+            "fresh": fresh,
+        }
+
+    return {
+        "prices": prices,
+        "flows": flows,
+        "spreads": {
+            "bybit_vs_binance": spread("Binance-Spot", "Bybit-Linear"),
+            "aggr_vs_bybit": spread("Bybit-Linear", "AGGR-BTCUSD"),
+        },
+        "updated_at_ms": now_ms,
+    }
 
 
 def get_inference_mode() -> str:
@@ -190,16 +260,33 @@ async def capture_market_data_loop() -> None:
     if interval_seconds <= 0:
         raise ValueError("El intervalo de captura debe ser mayor que cero.")
 
+    loop = asyncio.get_running_loop()
+    next_capture_at = loop.time() + interval_seconds
     while True:
-        await asyncio.sleep(interval_seconds)
+        await asyncio.sleep(max(0.0, next_capture_at - loop.time()))
+        capture_started_at = loop.time()
         now_ms = int(time.time() * 1000)
-        if now_ms - last_capture_at_ms < interval_seconds * 1000:
-            continue
         try:
             capture_market_snapshot(now_ms)
         except sqlite3.Error:
             logger.exception("No se pudo guardar el snapshot Bybit Linear en SQLite.")
             data_capture_status = "error"
+        next_capture_at = _next_snapshot_deadline(
+            next_capture_at,
+            capture_started_at,
+            interval_seconds,
+        )
+
+
+def _next_snapshot_deadline(
+    scheduled_at: float,
+    started_at: float,
+    interval_seconds: float,
+) -> float:
+    return max(
+        scheduled_at + interval_seconds,
+        started_at + interval_seconds,
+    )
 
 
 async def handle_aggregated_trade(agg_trade: AggregatedTrade):
@@ -237,6 +324,16 @@ async def handle_aggregated_trade(agg_trade: AggregatedTrade):
     probabilities = stream_classifier.classify()
     metrics = stream_classifier.get_current_metrics()
     stream_window_metrics = metrics_by_window(stream_classifier)
+    if metrics is not None:
+        latest_exchange_prices[agg_trade.exchange] = {
+            "price": float(agg_trade.price),
+            "updated_at_ms": now_ms,
+        }
+        latest_exchange_metrics[agg_trade.exchange] = {
+            "cvd_usd": float(metrics.cvd_usd),
+            "price_delta_bps": float(metrics.price_delta_bps),
+            "updated_at_ms": now_ms,
+        }
 
     if agg_trade.exchange == CONFIG.scalping.exchange:
         scalp_classifier.add_trade(agg_trade)
@@ -269,6 +366,7 @@ async def handle_aggregated_trade(agg_trade: AggregatedTrade):
         "data_capture_status": data_capture_status,
         "detector_config": asdict(CONFIG.classifier),
         "feature_windows_seconds": CONFIG.classifier.feature_windows_seconds,
+        "market_comparison": market_comparison_snapshot(now_ms),
         "scalping": {
             "signal": scalping_engine.last_signal or {"status": "no_setup"},
             "alert_enabled": scalping_engine.parameters is not None,
@@ -290,13 +388,40 @@ async def handle_raw_trade(raw_trade: RawTrade):
     await aggregator.process_raw_trade(raw_trade)
 
 
+last_aggr_broadcast_ms = 0
+
+
+async def handle_aggr_price(price: float, timestamp_ms: int, source: str):
+    """Handles incoming real-time BTCUSD trades from the native AGGR connector."""
+    global aggr_reference_quote, last_aggr_broadcast_ms
+    now_ms = int(time.time() * 1000)
+    aggr_reference_quote = {
+        "price": price,
+        "updated_at_ms": now_ms,
+        "source_observed_at_ms": timestamp_ms,
+        "source": source,
+    }
+    # Throttle broadcasts to at most once per 200ms to avoid flooding websocket clients
+    if now_ms - last_aggr_broadcast_ms >= 200:
+        last_aggr_broadcast_ms = now_ms
+        comparison = market_comparison_snapshot(now_ms)
+        await broadcast_message({
+            "type": "market_comparison",
+            "market_comparison": comparison,
+        })
+
+
 @app.on_event("startup")
 async def on_startup():
     global connectors, data_capture_status, last_capture_at_ms
     global last_bybit_trade_at_ms, snapshot_capture_task
+    global aggr_reference_quote
     connectors.clear()
     last_capture_at_ms = 0
     last_bybit_trade_at_ms = 0
+    latest_exchange_prices.clear()
+    latest_exchange_metrics.clear()
+    aggr_reference_quote = None
     market_data_store.initialize()
     data_capture_status = "waiting_for_warmup"
     logger.info("Iniciando conectores de OrderFlowAI...")
@@ -319,6 +444,16 @@ async def on_startup():
         )
         connectors.append(bybit_conn)
         await bybit_conn.start()
+
+    # 3. Native AGGR BTCUSD feed (Binance Coin-M / Bybit Inverse)
+    if getattr(CONFIG.exchange, "enable_aggr_btcusd", True):
+        preferred = getattr(CONFIG.exchange, "aggr_btcusd_source", "auto")
+        aggr_conn = AggrBtcusdConnector(
+            on_price_callback=handle_aggr_price,
+            preferred_source=preferred,
+        )
+        connectors.append(aggr_conn)
+        await aggr_conn.start()
 
     snapshot_capture_task = asyncio.create_task(capture_market_data_loop())
     logger.info(f"OrderFlowAI pipeline activo con {len(connectors)} conectores de exchanges.")
@@ -363,6 +498,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "data_capture_status": data_capture_status,
             "detector_config": asdict(CONFIG.classifier),
             "feature_windows_seconds": CONFIG.classifier.feature_windows_seconds,
+            "market_comparison": market_comparison_snapshot(),
             "scalping": {
                 "signal": scalping_engine.last_signal or {"status": "no_setup"},
                 "alert_enabled": scalping_engine.parameters is not None,
@@ -400,6 +536,33 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         active_websockets.discard(websocket)
         logger.warning(f"Error WebSocket: {e}")
+
+
+@app.post("/api/reference-price")
+async def receive_aggr_reference_price(
+    payload: AggrReferencePrice,
+    request: Request,
+):
+    global aggr_reference_quote
+    origin = request.headers.get("origin", "")
+    if not origin.startswith("chrome-extension://"):
+        raise HTTPException(
+            status_code=403,
+            detail="Solo se aceptan cotizaciones del puente de Chrome.",
+        )
+
+    now_ms = int(time.time() * 1000)
+    aggr_reference_quote = {
+        "price": payload.price,
+        "updated_at_ms": now_ms,
+        "source_observed_at_ms": payload.observed_at_ms,
+    }
+    comparison = market_comparison_snapshot(now_ms)
+    await broadcast_message({
+        "type": "market_comparison",
+        "market_comparison": comparison,
+    })
+    return {"status": "ok", "received_at_ms": now_ms}
 
 
 @app.post("/api/inference-mode/toggle")

@@ -51,6 +51,8 @@ Después del calentamiento, un muestreador por reloj guarda snapshots cada segun
 
 Cada snapshot nuevo de Bybit conserva por separado las puntuaciones heurísticas y el posterior del HMM-4 (`hmm_4`). Los registros anteriores no contienen ese posterior: no deben interpretarse como historial HMM. El estado HMM se reinicia después de una interrupción de captura mayor a 5 segundos, para no asumir continuidad durante una caída del feed. El HMM clasifica cuatro regímenes; no detecta armónicos. El análisis Fourier es un componente separado.
 
+El panel **Dispersión de precios y flujo entre exchanges** compara el último trade de Binance Spot con Bybit Linear y calcula ambas diferencias en USD y puntos básicos. También puede comparar el precio BTCUSD visible de AGGR con Bybit. Para este último dato, carga `browser_bridge/` como extensión desempaquetada en Chrome (chrome://extensions → activa **Modo desarrollador** → **Cargar extensión sin empaquetar**) y mantén abierta la aplicación AGGR en `https://btcusd.aggr.trade/`. El puente lee únicamente el título visible `BTCUSD <precio>` de esa página y lo envía cada segundo a `http://127.0.0.1:8000`; no recopila trades, historial, cookies ni credenciales. Reinicia OrderFlowAI después de cambiar el código del servidor. Si el puente no está cargado o el título no contiene el precio, la comparación AGGR queda marcada como pendiente/desactualizada. CVD y movimiento de precio se muestran por separado para ventanas de 5 segundos. El diferencial de precio no es desequilibrio del libro, arbitraje ejecutable ni prueba de acumulación/distribución institucional.
+
 El panel **Setups de scalping BTCUSDT · Bybit Linear** permite seleccionar hipótesis y hacer backtesting paper, sin envío de órdenes:
 
 1. Para **Validar order flow (SQLite)**, deja correr la captura de Bybit hasta reunir al menos 51,429 snapshots (aproximadamente 14.3 horas): así el primer 70 % contiene 36,000 observaciones para entrenamiento y queda un 30 % posterior para validación. Cada tramo debe tener al menos 100 operaciones simuladas y el límite inferior HAC aproximado del 95 % de la expectativa neta OOS debe ser positivo para marcar una hipótesis como validada. Es un filtro mínimo, no una garantía de rentabilidad ni una prueba contra selección repetida de estrategias. Fourier puede requerir más velas completas según la temporalidad seleccionada.
@@ -63,7 +65,7 @@ El panel **Setups de scalping BTCUSDT · Bybit Linear** permite seleccionar hip�
 
 Esta primera versión es experimental, no una recomendación ni garantía de rentabilidad. La ruta SQLite usa snapshots de precio de 1 segundo; la ruta OHLCV opera sobre velas descargadas. Ninguna incorpora funding, latencia, cola de ejecución ni impacto real de mercado, y una muestra corta puede sobreajustarse. No se conectan endpoints privados ni se colocan órdenes.
 
-Para reentrenar el HMM de clasificación de regímenes con snapshots Bybit Linear que tengan el esquema de features actual:
+La captura continua no entrena el HMM automáticamente. Para reentrenar el HMM de clasificación de regímenes con snapshots Bybit Linear que tengan el esquema de features actual:
 
 ```bash
 python -m src.ml.train_hmm

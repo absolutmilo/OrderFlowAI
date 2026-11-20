@@ -180,6 +180,79 @@ def test_snapshot_scores_preserve_heuristics_and_add_hmm4_posterior():
     assert scores["hmm_4"]["dominant_regime"] == "ALGO_INSTITUTIONAL"
 
 
+def test_market_comparison_reports_exchange_spreads_with_fresh_quotes():
+    prices = {
+        "Binance-Spot": {"price": 63_850.0, "updated_at_ms": 9_800},
+        "Bybit-Linear": {"price": 63_890.4, "updated_at_ms": 9_900},
+        "AGGR-BTCUSD": {
+            "price": 64_108.6,
+            "updated_at_ms": 9_950,
+            "source_observed_at_ms": 9_940,
+        },
+    }
+
+    with patch.object(server, "latest_exchange_prices", prices):
+        with patch.object(server, "latest_exchange_metrics", {
+            "Bybit-Linear": {
+                "cvd_usd": -649_000.0,
+                "price_delta_bps": 12.0,
+                "updated_at_ms": 9_900,
+            },
+        }):
+            with patch.object(server, "aggr_reference_quote", prices["AGGR-BTCUSD"]):
+                comparison = server.market_comparison_snapshot(now_ms=10_000)
+
+    assert comparison["spreads"]["bybit_vs_binance"]["difference_usd"] == 40.4
+    assert comparison["spreads"]["aggr_vs_bybit"]["difference_usd"] == 218.2
+    assert comparison["spreads"]["aggr_vs_bybit"]["difference_bps"] == 34.152
+    assert comparison["flows"]["Bybit-Linear"]["cvd_usd"] == -649_000.0
+    assert comparison["spreads"]["aggr_vs_bybit"]["fresh"] is True
+
+    stale_prices = {
+        "Binance-Spot": {"price": 63_850.0, "updated_at_ms": 4_999},
+        "Bybit-Linear": {"price": 63_890.4, "updated_at_ms": 4_999},
+    }
+    with patch.object(server, "latest_exchange_prices", stale_prices):
+        with patch.object(server, "latest_exchange_metrics", {}):
+            with patch.object(server, "aggr_reference_quote", None):
+                stale_comparison = server.market_comparison_snapshot(now_ms=10_000)
+
+    assert stale_comparison["spreads"]["bybit_vs_binance"]["fresh"] is False
+
+
+def test_aggr_reference_endpoint_accepts_chrome_extension_origin():
+    payload = server.AggrReferencePrice(price=64_108.6, observed_at_ms=10_000)
+    request = Mock()
+    request.headers = {"origin": "chrome-extension://test-extension"}
+
+    with patch.object(server, "aggr_reference_quote", None):
+        with patch.object(
+            server, "broadcast_message", new_callable=AsyncMock
+        ) as broadcast:
+            response = asyncio.run(
+                server.receive_aggr_reference_price(payload, request)
+            )
+
+    assert response["status"] == "ok"
+    broadcast.assert_awaited_once()
+    assert broadcast.await_args.args[0]["market_comparison"]["prices"][
+        "AGGR-BTCUSD"
+    ]["price"] == 64_108.6
+
+
+def test_aggr_reference_endpoint_rejects_non_extension_origin():
+    payload = server.AggrReferencePrice(price=64_108.6, observed_at_ms=10_000)
+    request = Mock()
+    request.headers = {"origin": "https://btcusd.aggr.trade"}
+
+    try:
+        asyncio.run(server.receive_aggr_reference_price(payload, request))
+    except HTTPException as error:
+        assert error.status_code == 403
+    else:
+        raise AssertionError("Expected non-extension quote source to be rejected.")
+
+
 def test_capture_market_snapshot_requires_a_fresh_bybit_trade():
     now_ms = int(time.time() * 1000)
     with patch.object(server, "last_bybit_trade_at_ms", now_ms - 6_000):
@@ -216,6 +289,12 @@ def test_out_of_order_aggregated_trade_is_dropped_without_refreshing_feed():
             assert server.last_bybit_trade_at_ms == 123
 
     classifier.classify.assert_not_called()
+
+
+def test_snapshot_deadline_does_not_add_processing_time_to_the_interval():
+    assert server._next_snapshot_deadline(10.0, 10.0, 1.0) == 11.0
+    assert server._next_snapshot_deadline(10.0, 10.4, 1.0) == 11.4
+    assert server._next_snapshot_deadline(10.0, 11.5, 1.0) == 12.5
 
 
 def test_capture_market_snapshot_persists_latest_fresh_state():

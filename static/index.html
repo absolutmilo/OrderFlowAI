@@ -4,8 +4,49 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OrderFlowAI - Panel de Microestructura & Sonificación</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=20261106-1">
+  <link rel="stylesheet" href="/static/css/style.css?v=20261119-1">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+  <style>
+    /* Posicionamiento superior y estética ordenada sin alterar alto/ancho interno */
+    .top-comparison-wrapper {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 12px 16px 0;
+    }
+
+    .card.market-comparison-card {
+      width: 100%;
+      margin: 0;
+      box-sizing: border-box;
+    }
+
+    .card.market-comparison-card .spread-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .card.market-comparison-card .spread-results {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .card.market-comparison-card .spread-stat,
+    .card.market-comparison-card .spread-results > div {
+      min-width: 0;
+      box-sizing: border-box;
+    }
+
+    @media (max-width: 900px) {
+      .card.market-comparison-card .spread-grid,
+      .card.market-comparison-card .spread-results {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
 </head>
 <body>
 
@@ -18,7 +59,7 @@
 
     <div class="market-ticker">
       <div class="ticker-item">
-        <span class="ticker-label">BTC/USDT Multi-Tape</span>
+        <span class="ticker-label">BTC/USDT · Bybit Linear</span>
         <span class="ticker-value" id="btc-price">$---,--</span>
       </div>
       <div class="ticker-item">
@@ -66,6 +107,49 @@
     <div style="font-size:0.78rem; color:var(--text-muted);">
       Audio Espacial: <span style="color:var(--green-buy); font-weight:700;">🟢 Compras (Canal Derecho)</span> | <span style="color:var(--red-sell); font-weight:700;">🔴 Ventas (Canal Izquierdo)</span>
     </div>
+  </div>
+
+  <!-- Top Market Comparison Strip -->
+  <div class="top-comparison-wrapper">
+    <section class="card market-comparison-card" aria-labelledby="market-comparison-title">
+      <div class="card-title market-comparison-heading">
+        <span id="market-comparison-title">Dispersión de precios y flujo entre exchanges</span>
+        <span id="market-comparison-status" class="market-comparison-status" role="status" aria-live="polite">
+          Esperando feeds...
+        </span>
+      </div>
+      <div class="spread-grid">
+        <div class="spread-stat">
+          <span class="spread-label">Binance Spot</span>
+          <strong id="comparison-binance-price">Esperando</strong>
+          <small>Flujo 5 s: <span id="comparison-binance-cvd">--</span> · Δ precio: <span id="comparison-binance-move">--</span></small>
+        </div>
+        <div class="spread-stat">
+          <span class="spread-label">Bybit Linear</span>
+          <strong id="comparison-bybit-price">Esperando</strong>
+          <small>Flujo 5 s: <span id="comparison-bybit-cvd">--</span> · Δ precio: <span id="comparison-bybit-move">--</span></small>
+        </div>
+        <div class="spread-stat">
+          <span class="spread-label">AGGR BTCUSD · feed directo</span>
+          <strong id="comparison-aggr-price">Conectando feed...</strong>
+          <small>Cotización nativa BTCUSD (Binance Coin-M / Bybit Inverse)</small>
+        </div>
+      </div>
+      <div class="spread-results">
+        <div>
+          <span class="spread-label">Bybit Linear − Binance Spot</span>
+          <strong id="spread-bybit-binance">Esperando ambos feeds</strong>
+        </div>
+        <div>
+          <span class="spread-label">AGGR BTCUSD − Bybit Linear</span>
+          <strong id="spread-aggr-bybit">Conectando...</strong>
+        </div>
+      </div>
+      <p class="spread-method-note">
+        Los diferenciales se muestran en USD y puntos básicos; el CVD y el movimiento de precio usan ventanas de 5 s por exchange.
+        Es una comparación de precios negociados, no un desequilibrio del libro ni evidencia de acumulación institucional o arbitraje ejecutable.
+      </p>
+    </section>
   </div>
 
   <!-- Main Content Grid -->
@@ -229,49 +313,48 @@
 
     <!-- Right Column: Live Aggregated Tape -->
     <section class="card">
-        <div class="card-title">
-          <span>Cinta de Transacciones Significativas</span>
-          <span style="font-size:0.75rem; color:var(--text-muted);" id="feed-stats">BINANCE + BYBIT</span>
-        </div>
+      <div class="card-title">
+        <span>Cinta de Transacciones Significativas</span>
+        <span style="font-size:0.75rem; color:var(--text-muted);" id="feed-stats">BINANCE + BYBIT</span>
+      </div>
 
-        <div class="tape-columns">
-          <section class="tape-panel" aria-labelledby="live-tape-title">
-            <h3 class="tape-panel-title" id="live-tape-title">Transacciones en vivo</h3>
-            <div class="tape-container">
-              <div class="tape-header">
-                <span>Hora</span>
-                <span>Exch.</span>
-                <span>Precio</span>
-                <span>Tamaño</span>
-                <span>Valor USD</span>
-                <span>Patrón</span>
-              </div>
-              <div class="tape-list" id="tape-list"></div>
+      <div class="tape-columns">
+        <section class="tape-panel" aria-labelledby="live-tape-title">
+          <h3 class="tape-panel-title" id="live-tape-title">Transacciones en vivo</h3>
+          <div class="tape-container">
+            <div class="tape-header">
+              <span>Hora</span>
+              <span>Exch.</span>
+              <span>Precio</span>
+              <span>Tamaño</span>
+              <span>Valor USD</span>
+              <span>Patrón</span>
             </div>
-          </section>
-          <section class="tape-panel whale-panel" aria-labelledby="whale-tape-title">
-            <div class="tape-panel-heading">
-              <h3 class="tape-panel-title" id="whale-tape-title">Cola ≥ $100k</h3>
-              <div class="whale-queue-tools">
-                <span id="whale-queue-count" class="whale-queue-count">0 / 120</span>
-                <button id="clear-whale-queue" class="clear-queue-button" type="button">Limpiar</button>
-              </div>
+            <div class="tape-list" id="tape-list"></div>
+          </div>
+        </section>
+        <section class="tape-panel whale-panel" aria-labelledby="whale-tape-title">
+          <div class="tape-panel-heading">
+            <h3 class="tape-panel-title" id="whale-tape-title">Cola ≥ $100k</h3>
+            <div class="whale-queue-tools">
+              <span id="whale-queue-count" class="whale-queue-count">0 / 120</span>
+              <button id="clear-whale-queue" class="clear-queue-button" type="button">Limpiar</button>
             </div>
-            <div class="tape-container">
-              <div class="tape-header">
-                <span>Hora</span>
-                <span>Exch.</span>
-                <span>Precio</span>
-                <span>Tamaño</span>
-                <span>Valor USD</span>
-                <span>Patrón</span>
-              </div>
-              <div class="tape-list" id="whale-tape-list" aria-live="polite">
-                <p class="tape-empty">Las transacciones ≥ $100k aparecerán aquí.</p>
-              </div>
+          </div>
+          <div class="tape-container">
+            <div class="tape-header">
+              <span>Hora</span>
+              <span>Exch.</span>
+              <span>Precio</span>
+              <span>Tamaño</span>
+              <span>Valor USD</span>
+              <span>Patrón</span>
             </div>
-          </section>
-        </div>
+            <div class="tape-list" id="whale-tape-list" aria-live="polite">
+              <p class="tape-empty">Las transacciones ≥ $100k aparecerán aquí.</p>
+            </div>
+          </div>
+        </section>
       </div>
     </section>
   </main>
@@ -358,6 +441,6 @@
   </dialog>
 
   <script src="/static/js/audio.js"></script>
-  <script src="/static/js/app.js?v=20261110-1"></script>
+  <script src="/static/js/app.js?v=20261119-1"></script>
 </body>
 </html>

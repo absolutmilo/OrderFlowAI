@@ -16,6 +16,8 @@ class ExchangeConfig:
     enable_binance_spot: bool = True
     enable_bybit_linear: bool = True
     enable_binance_futures: bool = False  # Disabled by default due to regional IP restrictions on fstream
+    enable_aggr_btcusd: bool = True  # Native AGGR BTCUSD feed (Binance Coin-M + Bybit Inverse)
+    aggr_btcusd_source: str = "auto"  # 'auto', 'binance', 'bybit'
     reconnect_delay_seconds: float = 2.0
     ping_interval_seconds: float = 20.0
 

@@ -49,6 +49,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const elCvdProfileVwap = document.getElementById('cvd-profile-vwap');
   const elCvdProfileVwapDistance = document.getElementById('cvd-profile-vwap-distance');
   const elCvdProfileStatus = document.getElementById('cvd-profile-status');
+  const elMarketComparisonStatus = document.getElementById('market-comparison-status');
 
   // Audio Controls
   const btnToggleAudio = document.getElementById('btn-toggle-audio');
@@ -376,6 +377,9 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        if (data.market_comparison) {
+          renderMarketComparison(data.market_comparison);
+        }
 
         if (data.type === 'order_flow_tick') {
           handleTradeTick(data.trade);
@@ -502,6 +506,115 @@ document.addEventListener('DOMContentLoaded', () => {
     elCvdUsd.style.color = cvdVal >= 0 ? '#00e676' : '#ff1744';
 
     elTps.textContent = `${metrics.trades_per_second.toFixed(1)} /s`;
+  }
+
+  function formatMarketPrice(value) {
+    return `$${Number(value).toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+  }
+
+  function formatSignedSpread(value, fractionDigits = 2) {
+    const number = Number(value);
+    const sign = number >= 0 ? '+' : '−';
+    return `${sign}$${Math.abs(number).toLocaleString('en-US', {
+      minimumFractionDigits: fractionDigits,
+      maximumFractionDigits: fractionDigits,
+    })}`;
+  }
+
+  function formatSignedBps(value) {
+    const number = Number(value);
+    return `${number >= 0 ? '+' : '−'}${Math.abs(number).toFixed(2)} bps`;
+  }
+
+  function renderMarketComparison(comparison) {
+    if (!comparison) return;
+
+    const prices = comparison.prices || {};
+    const flows = comparison.flows || {};
+    const renderPrice = (elementId, quote, waitingText) => {
+      const element = document.getElementById(elementId);
+      if (!element) return;
+      if (!quote || !Number.isFinite(Number(quote.price))) {
+        element.textContent = waitingText;
+        element.classList.add('spread-stale');
+        return;
+      }
+      element.textContent = `${formatMarketPrice(quote.price)}${quote.fresh ? '' : ' · desactualizado'}`;
+      element.classList.toggle('spread-stale', !quote.fresh);
+    };
+    const renderFlow = (cvdElementId, moveElementId, flow) => {
+      const cvdElement = document.getElementById(cvdElementId);
+      const moveElement = document.getElementById(moveElementId);
+      if (!cvdElement || !moveElement) return;
+      if (!flow || !flow.fresh) {
+        cvdElement.textContent = 'Sin datos recientes';
+        moveElement.textContent = '--';
+        cvdElement.classList.add('spread-stale');
+        moveElement.classList.add('spread-stale');
+        return;
+      }
+      cvdElement.textContent = formatSignedSpread(flow.cvd_usd, 0);
+      moveElement.textContent = formatSignedBps(flow.price_delta_bps);
+      cvdElement.classList.toggle('spread-positive', Number(flow.cvd_usd) >= 0);
+      cvdElement.classList.toggle('spread-negative', Number(flow.cvd_usd) < 0);
+      cvdElement.classList.remove('spread-stale');
+      moveElement.classList.toggle('spread-positive', Number(flow.price_delta_bps) >= 0);
+      moveElement.classList.toggle('spread-negative', Number(flow.price_delta_bps) < 0);
+      moveElement.classList.remove('spread-stale');
+    };
+    const renderSpread = (elementId, spread, waitingText) => {
+      const element = document.getElementById(elementId);
+      if (!element) return;
+      if (!spread || !Number.isFinite(Number(spread.difference_usd))) {
+        element.textContent = waitingText;
+        element.classList.add('spread-stale');
+        return;
+      }
+      if (!spread.fresh) {
+        element.textContent = 'Datos desactualizados';
+        element.classList.add('spread-stale');
+        return;
+      }
+      element.textContent = `${formatSignedSpread(spread.difference_usd)} · ${formatSignedBps(spread.difference_bps)}`;
+      element.classList.remove('spread-stale');
+      element.classList.toggle('spread-positive', Number(spread.difference_usd) >= 0);
+      element.classList.toggle('spread-negative', Number(spread.difference_usd) < 0);
+    };
+
+    renderPrice('comparison-binance-price', prices['Binance-Spot'], 'Esperando Binance');
+    renderPrice('comparison-bybit-price', prices['Bybit-Linear'], 'Esperando Bybit');
+    renderPrice('comparison-aggr-price', prices['AGGR-BTCUSD'], 'Conectando...');
+    renderFlow(
+      'comparison-binance-cvd',
+      'comparison-binance-move',
+      flows['Binance-Spot'],
+    );
+    renderFlow(
+      'comparison-bybit-cvd',
+      'comparison-bybit-move',
+      flows['Bybit-Linear'],
+    );
+    const spreads = comparison.spreads || {};
+    renderSpread(
+      'spread-bybit-binance',
+      spreads.bybit_vs_binance,
+      'Esperando ambos feeds',
+    );
+    renderSpread(
+      'spread-aggr-bybit',
+      spreads.aggr_vs_bybit,
+      'Conectando...',
+    );
+
+    if (elMarketComparisonStatus) {
+      const freshCount = ['Binance-Spot', 'Bybit-Linear', 'AGGR-BTCUSD']
+        .filter((source) => prices[source] && prices[source].fresh)
+        .length;
+      elMarketComparisonStatus.textContent = `Fuentes activas: ${freshCount}/3 · actualización esperada cada 1 s`;
+    }
   }
 
   function formatProfilePrice(value) {

@@ -174,6 +174,93 @@ input[type="range"] {
   cursor: pointer;
 }
 
+/* Top Market Comparison Wrapper & Strip */
+.top-comparison-wrapper {
+  width: 100%;
+  padding: 16px 24px 0;
+}
+
+.card.market-comparison-card {
+  width: 100%;
+  margin: 0;
+  box-sizing: border-box;
+}
+
+.market-comparison-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.market-comparison-status,
+.spread-label,
+.spread-stat small {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.spread-grid,
+.spread-results {
+  display: grid;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.spread-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.spread-results {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.spread-stat,
+.spread-results > div {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 12px;
+  background: var(--bg-dark);
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  box-sizing: border-box;
+}
+
+.spread-stat strong,
+.spread-results strong {
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.spread-stat small {
+  line-height: 1.5;
+}
+
+.spread-positive {
+  color: var(--green-buy);
+}
+
+.spread-negative {
+  color: var(--red-sell);
+}
+
+.spread-stale {
+  color: var(--text-muted) !important;
+}
+
+.spread-method-note {
+  margin-top: 12px;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
 /* Main Container Grid */
 main {
   display: grid;
@@ -274,12 +361,28 @@ main {
 }
 
 @media (max-width: 960px) {
+  .top-comparison-wrapper {
+    padding: 12px 12px 0;
+  }
+
   .scalp-card {
     margin: 0 12px 16px;
   }
 }
 
 @media (max-width: 620px) {
+  .top-comparison-wrapper {
+    padding: 12px 12px 0;
+  }
+
+  .spread-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .spread-results {
+    grid-template-columns: 1fr;
+  }
+
   .scalp-heading,
   .scalp-results {
     align-items: flex-start;

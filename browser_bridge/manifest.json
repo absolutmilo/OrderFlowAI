@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "OrderFlowAI AGGR Quote Bridge",
+  "version": "1.0.0",
+  "description": "Sends the visible BTCUSD quote from AGGR to the local OrderFlowAI dashboard.",
+  "host_permissions": [
+    "https://btcusd.aggr.trade/*",
+    "http://127.0.0.1:8000/*"
+  ],
+  "background": {
+    "service_worker": "service_worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://btcusd.aggr.trade/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
